@@ -71,3 +71,23 @@ spig-dsh-toolkit/
 3. **Registre no `src/core/registry.js`**: importe e adicione `meuComponente` ao array `DEFAULT_COMPONENTS`.
 4. **Se o componente tiver UI Client**: adicione sua entrada ao array `CLIENT_COMPONENTS` em `scripts/build.mjs` e execute `npm run build`.
 5. **Valide**: execute `npm run check && npm test`.
+
+## Patches aplicados sobre código vendorizado
+
+O diretório `components/` contém cópias integrais dos runtimes originais, com
+**uma única divergência intencional** (verificada por hash contra os projetos
+de origem):
+
+- `components/thinking-provider/lib/client.js` → `componentSwitchesFrom()`:
+  quando o inventário do Host não contém nenhuma das 7 entradas legadas
+  (`spig-dsh-thinking-provider` e `spig-dsh-thinking-provider/*`), o estado de
+  todos os switches (`levels`, `settings`, `opencode`, `compaction`,
+  `subagent`, `migration`, `composer`) deriva da entrada `spig-dsh-toolkit`.
+  Sem isso, o cliente marcaria tudo como `"off"` e pularia o registro da
+  slidebar de reasoning (`conversation.input.model`) e do painel de
+  configurações do Thinking Provider.
+
+**Ao ressincronizar `components/` com uma nova versão de um plugin original,
+reaplique o patch acima e rode `node scripts/build.mjs`** (o `lib/client.js`
+é gerado e commitado, e o build é determinístico: rebuild sem mudanças de
+fonte produz byte-identical).
