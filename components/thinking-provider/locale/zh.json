@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "spig-dsh-thinking-provider",
+    "description": "为 DSH 的第三方模型提供推理档位，并为子代理设置默认档位。@hytime/dsh-thinking-effort 的 fork。"
+  }
+}

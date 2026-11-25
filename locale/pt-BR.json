@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "Spig DSH Toolkit",
+    "description": "Plugin modular que centraliza Subscriptions e Thinking Provider com ativação independente por componente.",
+    "detail": "docs/ARCHITECTURE.md"
+  }
+}

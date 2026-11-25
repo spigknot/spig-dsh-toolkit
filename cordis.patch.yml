@@ -1,0 +1,7 @@
+# spig-dsh-toolkit — unified modular plugin for DeepSeek Harness.
+# Mounts the toolkit host orchestrator; individual components (Subscriptions,
+# Thinking Provider, and future modules) are toggled independently in
+# Settings > Spig Toolkit and mounted/unmounted dynamically via Cordis fibers.
+- insert:
+    - id: spig-dsh-toolkit
+      name: spig-dsh-toolkit

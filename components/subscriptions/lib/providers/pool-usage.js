@@ -1,0 +1,311 @@
+/**
+ * Quota tracking for pool members: polls the providers' usage endpoints
+ * (the same normalized `ProviderUsage` shape the Settings page consumes) and
+ * turns the windows into a scheduling score.
+ *
+ * The score is a REQUIRED BURN RATE: the fraction of the window that must be
+ * consumed per millisecond for the quota to be exactly used up at reset time
+ * (`remaining / timeUntilReset`). Subscription quota does not roll over, so a
+ * window about to reset with plenty left is the most urgent to spend — the
+ * `quota_aware` strategy therefore prefers the highest-urgency member, which
+ * over time converges on every window hitting zero right at its reset.
+ */
+import { antigravityQuotaApplies } from '../antigravity-model-id.js';
+import { isMissingOrInvalidCredential, OAuthEndpointError } from './common.js';
+/** Near-full members are tried only after members below this fill level. */
+export const QUOTA_FULL_PERCENT = 95;
+/**
+ * Exhausted subscription windows stop routing unless Codex reports remaining
+ * purchased credits. A missing or zero balance is not permission to spend.
+ */
+export const QUOTA_EXHAUSTED_PERCENT = 100;
+/** How long a usage snapshot is trusted before a background refresh. */
+export const USAGE_TTL_MS = 5 * 60_000;
+/** Assumed window length when the provider discloses no `resetsAt`. */
+const FALLBACK_HORIZON_MS = {
+    session: 5 * 60 * 60_000,
+    weekly: 7 * 24 * 60 * 60_000,
+    other: 30 * 24 * 60 * 60_000,
+};
+/**
+ * Per-ACCOUNT usage snapshots with in-flight dedupe and
+ * stale-while-revalidate refresh. Providers without a usage endpoint
+ * (copilot) resolve no fetcher and score a constant zero urgency — which
+ * naturally ranks them behind every measured member. Fetchers are resolved
+ * lazily per (provider, account) so accounts added after startup join
+ * tracking on their first score.
+ */
+export class PoolUsageTracker {
+    fetcherFor;
+    ttlMs;
+    entries = new Map();
+    inflight = new Map();
+    constructor(fetcherFor, ttlMs = USAGE_TTL_MS) {
+        this.fetcherFor = fetcherFor;
+        this.ttlMs = ttlMs;
+    }
+    /**
+     * The quota view of one member. A cold cache awaits the first fetch; a
+     * stale non-exhausted snapshot answers immediately while refreshing in the
+     * background. Exhausted snapshots, and Codex accounts already known to be
+     * spending credits, await their expired-cache refresh so a reset or a
+     * depleted balance can change routing on this call. A live failure cooldown
+     * never triggers another fetch.
+     *
+     * Failures discard stale urgency but preserve known exhaustion and a known
+     * credit-funded fallback. An outage must not turn a blocked subscription
+     * into permission to spend credits, and must not hide a balance that was
+     * already confirmed. Only a successful usage lookup (or explicit
+     * invalidation) clears either state.
+     * @param member - the pool member to score (account resolved).
+     * @returns availability plus the urgency score.
+     */
+    async quotaFor(member, normalized = false) {
+        const key = `${member.provider}/${member.account}`;
+        const fetcher = this.fetcherFor(member.provider, member.account);
+        if (fetcher === undefined)
+            return { available: true, urgency: 0, fetchedAt: 0 };
+        const entry = this.entries.get(key);
+        if (entry !== undefined) {
+            const fresh = Date.now() - entry.at < (entry.cooldownMs ?? this.ttlMs);
+            if (entry.snapshot !== undefined) {
+                const quota = this.score(member, entry, normalized);
+                if (fresh)
+                    return quota;
+                if (!quota.exhausted && !quota.creditFunded && entry.at !== Number.NEGATIVE_INFINITY) {
+                    void this.refresh(key, fetcher).catch(() => undefined);
+                    return quota;
+                }
+                // A reset may have restored the subscription since the last lookup.
+            }
+            else if (fresh) {
+                return this.failedQuota(member, entry.error, entry.lastSnapshot);
+            }
+            // The cooldown expired: fall through to a fresh, blocking attempt.
+        }
+        try {
+            const snapshot = await this.refresh(key, fetcher);
+            return this.score(member, { snapshot, at: Date.now() }, normalized);
+        }
+        catch (error) {
+            return this.failedQuota(member, error, entry?.snapshot ?? entry?.lastSnapshot);
+        }
+    }
+    /** Keep a known blocked or credit-funded state through usage-endpoint failures. */
+    failedQuota(member, error, snapshot) {
+        const degraded = degradedQuota(error);
+        const previous = snapshot === undefined ? undefined : this.score(member, { snapshot, at: 0 });
+        if (previous?.exhausted)
+            return { ...degraded, available: false, exhausted: true };
+        if (previous?.creditFunded)
+            return { ...degraded, available: false, urgency: 0, creditFunded: true };
+        return degraded;
+    }
+    /**
+     * Same cache as {@link quotaFor}, for direct display (the Settings page):
+     * the raw snapshot, or the original fetch error, instead of a routing
+     * score.
+     * @param provider - the account's provider.
+     * @param account - the account key.
+     * @param force - bypass a fresh cached SNAPSHOT for an honest re-check (the
+     *   manual Refresh button). A live failure cooldown is never bypassed —
+     *   retrying through it is exactly what turns a 429 into a permanent
+     *   lockout, so even a forced call still answers from the negative cache.
+     * @returns `{ supported: false }` when the provider has no usage fetcher.
+     */
+    async snapshotFor(provider, account, force = false) {
+        const fetcher = this.fetcherFor(provider, account);
+        if (fetcher === undefined)
+            return { supported: false };
+        const key = `${provider}/${account}`;
+        const entry = this.entries.get(key);
+        if (entry !== undefined && Date.now() - entry.at < (entry.cooldownMs ?? this.ttlMs)) {
+            if (entry.snapshot !== undefined) {
+                if (!force)
+                    return entry.snapshot;
+            }
+            else if (entry.lastSnapshot !== undefined) {
+                // A stale-but-real snapshot beats surfacing the cooldown error to
+                // every display surface — this is what was previously showing, so
+                // keep showing it (even through a forced refresh: retrying past the
+                // cooldown is exactly the retry storm `cooldownMs` exists to avoid).
+                return entry.lastSnapshot;
+            }
+            else {
+                throw entry.error;
+            }
+        }
+        try {
+            return await this.refresh(key, fetcher);
+        }
+        catch (error) {
+            // Same fallback as the already-cooling-down branch above, for the
+            // fetch that just failed on THIS call: `refresh` recorded whatever
+            // snapshot was on record before it ran onto the new failure entry.
+            const failed = this.entries.get(key);
+            if (failed?.snapshot === undefined && failed?.lastSnapshot !== undefined)
+                return failed.lastSnapshot;
+            throw error;
+        }
+    }
+    /** Decorate a copy for UI consumers; raw snapshots and routing stay unchanged. */
+    async displaySnapshotFor(provider, account, force = false) {
+        const snapshot = await this.snapshotFor(provider, account, force);
+        const entry = this.entries.get(`${provider}/${account}`);
+        if (!entry)
+            return snapshot;
+        const fetchedAt = entry.snapshot !== undefined ? (entry.fetchedAt ?? entry.at) : entry.lastSnapshotAt;
+        return {
+            ...snapshot,
+            ...(fetchedAt === undefined || !Number.isFinite(fetchedAt) ? {} : { fetchedAt, staleAt: fetchedAt + this.ttlMs }),
+            stale: entry.snapshot === undefined || Date.now() - entry.at >= this.ttlMs,
+            refreshFailed: entry.snapshot === undefined,
+            ...(entry.snapshot === undefined ? { retryAt: entry.at + entry.cooldownMs } : {}),
+        };
+    }
+    /** Recheck after an inference quota failure without erasing another model lane's exhaustion. */
+    expire(provider, account) {
+        const key = `${provider}/${account}`;
+        const entry = this.entries.get(key);
+        // Respect a usage-endpoint cooldown; inference errors do not lift it.
+        if (entry?.snapshot !== undefined)
+            this.entries.set(key, { ...entry, at: Number.NEGATIVE_INFINITY });
+    }
+    /** Drop cached snapshots: one account, or a whole provider when `account` is omitted. */
+    invalidate(provider, account) {
+        if (account !== undefined) {
+            this.entries.delete(`${provider}/${account}`);
+            return;
+        }
+        for (const key of [...this.entries.keys()]) {
+            if (key.startsWith(`${provider}/`))
+                this.entries.delete(key);
+        }
+    }
+    /**
+     * Run (or join) the single in-flight fetch for one account key, caching
+     * either outcome. A missing/invalid credential is deliberately NOT
+     * negative-cached: it costs no network round trip (the session lookup
+     * fails before the request goes out) and re-checking live means the
+     * member rejoins routing the instant its login is fixed, rather than
+     * waiting out a stale cooldown.
+     */
+    refresh(key, fetcher) {
+        let pending = this.inflight.get(key);
+        if (pending === undefined) {
+            // Captured before the fetch starts: whichever real snapshot is on
+            // record right now is what a failure below should fall back to. A
+            // failure entry's own `lastSnapshot` counts too — otherwise the stale
+            // snapshot would survive exactly one cooldown and vanish on the next
+            // consecutive failure, even though nothing newer ever replaced it.
+            const prior = this.entries.get(key);
+            const lastSnapshot = prior?.snapshot ?? prior?.lastSnapshot;
+            const lastSnapshotAt = prior?.snapshot !== undefined ? (prior.fetchedAt ?? prior.at) : prior?.lastSnapshotAt;
+            pending = fetcher().then((snapshot) => {
+                const fetchedAt = Date.now();
+                this.entries.set(key, { snapshot, at: fetchedAt, fetchedAt });
+                return snapshot;
+            }, (error) => {
+                if (!isMissingOrInvalidCredential(error)) {
+                    this.entries.set(key, {
+                        error,
+                        at: Date.now(),
+                        cooldownMs: cooldownFor(error, this.ttlMs),
+                        ...lastSnapshot === undefined ? {} : { lastSnapshot },
+                        ...lastSnapshotAt === undefined ? {} : { lastSnapshotAt },
+                    });
+                }
+                throw error;
+            }).finally(() => {
+                this.inflight.delete(key);
+            });
+            this.inflight.set(key, pending);
+        }
+        return pending;
+    }
+    /** Score one member against a snapshot's windows. */
+    score(member, entry, normalized = false) {
+        const windows = (entry.snapshot.windows ?? []).filter(window => windowApplies(window, member.model, member.provider));
+        let available = true;
+        let urgency = 0;
+        for (const window of windows) {
+            if (window.usedPercent >= QUOTA_FULL_PERCENT)
+                available = false;
+            urgency = Math.max(urgency, normalized ? normalizedWindowUrgency(window, Date.now()) : windowUrgency(window));
+        }
+        const windowExhausted = windows.some(window => window.usedPercent >= QUOTA_EXHAUSTED_PERCENT);
+        const creditFunded = windowExhausted && codexCreditsFunded(entry.snapshot, member.provider);
+        const exhausted = windowExhausted && !creditFunded;
+        return {
+            available: available && !creditFunded,
+            urgency: creditFunded ? 0 : urgency,
+            fetchedAt: entry.at,
+            ...exhausted ? { exhausted: true } : {},
+            ...creditFunded ? { creditFunded: true } : {},
+        };
+    }
+}
+/**
+ * Whether a Codex account may keep serving after its included windows are
+ * exhausted. Only an unlimited flag or a positive reported balance counts;
+ * a missing snapshot, a zero balance, or an overage block does not.
+ */
+export function codexCreditsFunded(snapshot, provider) {
+    if (provider !== 'codex')
+        return false;
+    const credits = snapshot.credits;
+    if (credits === undefined || credits.overageLimitReached === true)
+        return false;
+    if (credits.unlimited)
+        return true;
+    if (credits.balance !== undefined) {
+        const balance = Number(credits.balance);
+        return Number.isFinite(balance) && balance > 0;
+    }
+    return credits.hasCredits;
+}
+/**
+ * The routing view of a fetch failure. Logged out: the member cannot serve
+ * at all. Any other failure (network, endpoint rate limit) must not block
+ * routing — the member stays available with a zero score, degrading the
+ * strategy to plain priority order for it.
+ */
+function degradedQuota(error) {
+    return isMissingOrInvalidCredential(error)
+        ? { available: false, urgency: 0, fetchedAt: 0 }
+        : { available: true, urgency: 0, fetchedAt: 0 };
+}
+/** How long to hold a failure in the negative cache: the endpoint's own `retry-after`, or the default TTL. */
+function cooldownFor(error, defaultTtlMs) {
+    return error instanceof OAuthEndpointError && error.retryAfterMs !== undefined ? error.retryAfterMs : defaultTtlMs;
+}
+/**
+ * Whether a window constrains this model: unscoped windows always do; a
+ * model-scoped window (Claude's Opus/Sonnet lanes) applies when its scope
+ * names the model family.
+ */
+function windowApplies(window, model, provider) {
+    if (window.scope === undefined)
+        return true;
+    if (provider === 'antigravity' && antigravityQuotaApplies(window.scope, model))
+        return true;
+    return model.toLowerCase().includes(window.scope.toLowerCase());
+}
+/** Dimensionless urgency for the opt-in strategy. Missing timing adds no reset bonus. */
+export function normalizedWindowUrgency(window, now) {
+    const remaining = Math.max(0, Math.min(1, 1 - window.usedPercent / 100));
+    const { durationMs, resetsAt } = window;
+    if (durationMs === undefined || !Number.isFinite(durationMs) || durationMs <= 0
+        || resetsAt === undefined || !Number.isFinite(resetsAt))
+        return remaining;
+    const timeFraction = Math.min(1, Math.max(0.001, (resetsAt - now) / durationMs));
+    return remaining / timeFraction;
+}
+/** The required burn rate of one window (fraction per ms). */
+function windowUrgency(window, now = Date.now()) {
+    const remaining = Math.max(0, 1 - window.usedPercent / 100);
+    const horizon = window.resetsAt !== undefined
+        ? Math.max(window.resetsAt - now, 1)
+        : FALLBACK_HORIZON_MS[window.kind];
+    return remaining / horizon;
+}

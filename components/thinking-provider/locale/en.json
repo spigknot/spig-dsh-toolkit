@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "spig-dsh-thinking-provider",
+    "description": "Reasoning effort levels for third-party models in DSH, plus a default effort for subagents. Fork of @hytime/dsh-thinking-effort."
+  }
+}

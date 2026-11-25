@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "spig-dsh-thinking-provider",
+    "description": "DSH의 서드파티 모델에 추론 강도 단계를 추가하고 하위 에이전트의 기본값을 설정합니다. @hytime/dsh-thinking-effort 의 포크입니다."
+  }
+}

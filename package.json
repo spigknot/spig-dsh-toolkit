@@ -1,0 +1,59 @@
+{
+  "name": "spig-dsh-toolkit",
+  "version": "1.0.0",
+  "description": "Modular DeepSeek Harness plugin unifying Subscriptions (Codex/Claude/Grok/Copilot/Antigravity) and Thinking Provider with independent component toggles.",
+  "license": "MIT",
+  "type": "module",
+  "icon": "./icon.svg",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./icon": "./icon.svg",
+    "./locale/*.json": "./locale/*.json",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "src",
+    "components",
+    "locale",
+    "docs",
+    "cordis.patch.yml",
+    "icon.svg",
+    "README.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-settings",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "check": "node --check lib/index.js && node --check lib/client.js",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.3",
+    "undici": "^7.0.0",
+    "yaml": "^2.9.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1 || ^4.0.6-alpha.1",
+    "@deepseek-ai/dsh-attachment": ">=0.2.0-rc.2 || >=0.2.1-0 || >=0.2.2-0",
+    "@deepseek-ai/dsh-home-paths": ">=0.2.0-rc.2 || >=0.2.1-0 || >=0.2.2-0",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 || >=0.2.1-0 || >=0.2.2-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 || >=0.2.1-0 || >=0.2.2-0",
+    "@deepseek-ai/dsh-web": ">=0.2.0-rc.2 || >=0.2.1-0 || >=0.2.2-0"
+  }
+}

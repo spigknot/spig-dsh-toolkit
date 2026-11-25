@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "spig-dsh-thinking-provider",
+    "description": "DSH のサードパーティ製モデルに推論強度の段階を追加し、サブエージェントの既定値を設定します。@hytime/dsh-thinking-effort のフォークです。"
+  }
+}
