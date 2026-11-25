@@ -280,6 +280,13 @@ const COMPONENT_DEPENDENCIES = {
 */
 function componentSwitchesFrom(snapshot) {
 	const states = {};
+	const hasLegacyRows = Array.isArray(snapshot?.entries) && Object.values(COMPONENT_ROWS).some(({ moduleName }) => snapshot.entries.some((entry) => entry.moduleName === moduleName));
+	if (!hasLegacyRows) {
+		const toolkitRow = snapshot?.entries?.find((entry) => entry.moduleName === "spig-dsh-toolkit");
+		const state = toolkitRow === void 0 ? snapshot === void 0 ? "unknown" : "on" : toolkitRow.enabled === true ? "on" : "off";
+		for (const key of Object.keys(COMPONENT_ROWS)) states[key] = state;
+		return cascadeDependencies(states);
+	}
 	for (const key of Object.keys(COMPONENT_ROWS)) {
 		const { moduleName } = COMPONENT_ROWS[key];
 		const row = snapshot?.entries?.find((entry) => entry.moduleName === moduleName);
