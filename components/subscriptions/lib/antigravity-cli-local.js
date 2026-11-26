@@ -14,7 +14,8 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import { appendFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { existsSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bridgeHeader, bridgeTag, serializeToolsCompact, shouldBridge } from './antigravity-tool-bridge.js';
 
@@ -291,7 +292,7 @@ const CONTEXT_SOURCES = new Set([
 const LABELS = { system: 'System', developer: 'Developer', assistant: 'Assistant', tool: 'Tool result', user: 'User', context: 'Context' };
 const RETRY_REQUEST = 'Retry the last request: the previous attempt did not complete. Answer the most recent request above.';
 const TOOL_CONTINUATION = 'Continue the task from the tool results above and answer the most recent request.';
-const BRIDGE_CONTINUATION = 'Continue the task from the tool results above: call more tools if you still need them, otherwise answer the most recent request.';
+const bridgeContinuation = (tag) => `Continue the task from the tool results above: call more tools if you still need them (using <${tag}>{"name":"TOOL_NAME","arguments":{...}}</${tag}> blocks, never built-in CLI tools), otherwise answer the most recent request.`;
 /** Same length as a real tag, so estimates match what is sent. */
 const ESTIMATE_BRIDGE = { tag: 'dsh_tc_000000000000' };
 
@@ -424,7 +425,7 @@ export function splitPrompt({ messages, system }, options) {
 	if (lastRequestEmpty) throw new AgyCliError('Antigravity CLI route received an empty request; nothing was sent', 'EMPTY_REQUEST');
 	if (requests.length === 0) {
 		if (!context.some((part) => part.tool)) throw new AgyCliError('Antigravity CLI route has no request after the last answer (only harness context); nothing was sent', 'EMPTY_REQUEST');
-		requests.push({ label: LABELS.user, text: options?.bridge === undefined ? TOOL_CONTINUATION : BRIDGE_CONTINUATION });
+		requests.push({ label: LABELS.user, text: options?.bridge === undefined ? TOOL_CONTINUATION : bridgeContinuation(options.bridge.tag) });
 	}
 	const instructions = typeof system === 'string' ? system.trim() : '';
 	return { instructions, head, history, context, requests, activeTurn };
@@ -584,10 +585,28 @@ const streamTurn = (prompt) => JSON.stringify({ event: 'user', message: { role: 
  * answer. Disabled by default, and every failure is swallowed: a diagnostic
  * must never break a call.
  */
+/**
+ * TOOLKIT DIVERGENCE: besides `DSH_AGY_DEBUG=1`, the journal also turns on when
+ * `$DSH_HOME/plugins/subscriptions/agy-debug.flag` exists, because the
+ * supervised host inherits a frozen environment from its long-lived launcher.
+ * `DSH_AGY_DEBUG=0` forces it off. With the flag, the default log sits next to it.
+ */
+function agyDebugDir() {
+	return join(process.env.DSH_HOME?.trim() || join(homedir(), '.dsh'), 'plugins', 'subscriptions');
+}
+
+export function agyDebugEnabled() {
+	const env = process.env.DSH_AGY_DEBUG?.trim();
+	if (env === '1') return true;
+	if (env === '0') return false;
+	try { return existsSync(join(agyDebugDir(), 'agy-debug.flag')); } catch { return false; }
+}
+
 export async function debugLog(record) {
-	if (process.env.DSH_AGY_DEBUG?.trim() !== '1') return;
+	if (!agyDebugEnabled()) return;
 	try {
-		const file = process.env.DSH_AGY_DEBUG_LOG?.trim() || join(tmpdir(), 'dsh-agy-debug.log');
+		const fallback = process.env.DSH_AGY_DEBUG?.trim() === '1' ? join(tmpdir(), 'dsh-agy-debug.log') : join(agyDebugDir(), 'agy-debug.log');
+		const file = process.env.DSH_AGY_DEBUG_LOG?.trim() || fallback;
 		await appendFile(file, `${JSON.stringify({ at: new Date().toISOString(), ...record })}\n`, 'utf8');
 	} catch {}
 }

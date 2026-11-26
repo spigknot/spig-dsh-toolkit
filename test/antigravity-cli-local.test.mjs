@@ -384,11 +384,13 @@ test('without the switch the journal stays silent', async () => {
 		stdout.end('{"event":"result","result":{"status":"SUCCESS","response":"ok"}}\n');
 		child.emit('close', 0);
 	});
+	process.env.DSH_AGY_DEBUG = '0';
 	process.env.DSH_AGY_DEBUG_LOG = log;
 	try {
 		await createAgy({ spawn, bin: 'agy-under-test' }).run({ model: 'gemini-4-hydrogen', messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }] });
 		assert.equal(existsSync(log), false);
 	} finally {
+		delete process.env.DSH_AGY_DEBUG;
 		delete process.env.DSH_AGY_DEBUG_LOG;
 	}
 });

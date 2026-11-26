@@ -124,7 +124,14 @@ export const generalConfigsComponent = {
         healthUrl: config.healthUrl,
       });
       const compaction = createCompactionBridge(ctx, { onWarn });
-      registerGeneralRpc(ctx, { store, startup, compaction });
+      const sessionQuery = () => {
+        try {
+          return ctx.get?.("sessionQuery") ?? ctx.root?.get?.("sessionQuery");
+        } catch {
+          return undefined;
+        }
+      };
+      registerGeneralRpc(ctx, { store, startup, compaction, sessionQuery });
     },
   },
 };

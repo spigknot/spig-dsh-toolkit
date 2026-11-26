@@ -1,6 +1,6 @@
 {
   "name": "spig-dsh-toolkit",
-  "version": "1.2.2",
+  "version": "1.2.3",
   "description": "Modular DeepSeek Harness plugin unifying Subscriptions, Thinking Provider, and General Configs (Sidebar Bottom, Session Search, Windows Autostart, Compaction) with independent component toggles.",
   "license": "MIT",
   "type": "module",

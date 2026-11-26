@@ -297,6 +297,49 @@ test("GeneralConfigsStore persists sidebarBottom sub-toggles atomically and defa
 
     const bad = await dispatchGeneralRpc(deps, "nope", {});
     assert.equal(bad.ok, false);
+
+    const sessionQuery = {
+      calls: [],
+      async searchSessions(request) {
+        this.calls.push(request);
+        return {
+          items: [
+            { header: { id: "s1", cwd: "C:\\a" }, bestMatch: { snippet: "hit one" } },
+            { header: { id: "s2" }, bestMatch: { snippet: "hit two" } },
+          ],
+          nextCursor: "cursor-1",
+        };
+      },
+    };
+    const fts = await dispatchGeneralRpc({ ...deps, sessionQuery: () => sessionQuery }, "ftsSearch", { query: "pequena" });
+    assert.equal(fts.ok, true);
+    assert.deepEqual(fts.value.items, [
+      { sessionId: "s1", snippet: "hit one", cwd: "C:\\a" },
+      { sessionId: "s2", snippet: "hit two", cwd: null },
+    ]);
+    assert.equal(fts.value.nextCursor, "cursor-1");
+    assert.equal(sessionQuery.calls.length, 1);
+    assert.equal(sessionQuery.calls[0].query, "pequena");
+    assert.equal(sessionQuery.calls[0].limit, 10);
+    assert.deepEqual(sessionQuery.calls[0].eventFilters, [
+      { kind: "type", values: ["user/message", "assistant/message"] },
+      { kind: "surface", values: ["current"] },
+    ]);
+
+    const ftsPaged = await dispatchGeneralRpc({ ...deps, sessionQuery: () => sessionQuery }, "ftsSearch", { query: "pequena", limit: 5, cursor: "cursor-1" });
+    assert.equal(ftsPaged.ok, true);
+    assert.equal(sessionQuery.calls[1].limit, 5);
+    assert.equal(sessionQuery.calls[1].cursor, "cursor-1");
+
+    const ftsEmpty = await dispatchGeneralRpc({ ...deps, sessionQuery: () => sessionQuery }, "ftsSearch", { query: "   " });
+    assert.equal(ftsEmpty.ok, false);
+
+    const ftsBadLimit = await dispatchGeneralRpc({ ...deps, sessionQuery: () => sessionQuery }, "ftsSearch", { query: "x", limit: 101 });
+    assert.equal(ftsBadLimit.ok, false);
+
+    const ftsNoService = await dispatchGeneralRpc(deps, "ftsSearch", { query: "x" });
+    assert.equal(ftsNoService.ok, false);
+    assert.equal(ftsNoService.error.code, "general/unavailable");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

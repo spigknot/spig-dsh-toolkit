@@ -4,7 +4,7 @@ import path from 'node:path';
 import { ACP_DENIED_ANSWER, createAcpClient } from './antigravity-acp-client.js';
 import { deliverAcpContext } from './antigravity-context-delivery.js';
 import { agyBridgeFor, agyToolBridge, agyTransport, AGY_PROMPT_TOO_LARGE, AgyCliError, debugLog, runAgy, splitPrompt } from './antigravity-cli-local.js';
-import { answerChunks, canonicalAnswer, invalidCallFeedback, noteInvalidCalls, parseToolBridgeOutput } from './antigravity-tool-bridge.js';
+import { answerChunks, canonicalAnswer, deniedNativeToolFeedback, invalidCallFeedback, noteInvalidCalls, parseToolBridgeOutput } from './antigravity-tool-bridge.js';
 import { streamCliResult } from './antigravity-cli-adapter.js';
 
 const STATE_VERSION = 1;
@@ -53,8 +53,11 @@ async function* bridged(source, bridge, retry) {
   let turn = await collectOne(source);
   if (!turn.done) { yield* turn.buffered; return; }
   let parsed = parseToolBridgeOutput(turn.text, bridge.tag, new Set(bridge.names));
-  if (parsed.calls.length === 0 && parsed.invalid.length > 0 && retry) {
-    const second = await collectOne(retry(invalidCallFeedback(bridge.tag, parsed.invalid)));
+  if (retry && (turn.text === ACP_DENIED_ANSWER || (parsed.calls.length === 0 && parsed.invalid.length > 0))) {
+    const feedback = turn.text === ACP_DENIED_ANSWER
+      ? deniedNativeToolFeedback(bridge.tag)
+      : invalidCallFeedback(bridge.tag, parsed.invalid);
+    const second = await collectOne(retry(feedback));
     if (!second.done) { yield* second.buffered; return; }
     if (second.text.trim()) {
       turn = second;

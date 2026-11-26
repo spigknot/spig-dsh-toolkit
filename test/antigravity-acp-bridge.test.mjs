@@ -8,6 +8,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { ACP_DENIED_ANSWER } from '../components/subscriptions/lib/antigravity-acp-client.js';
 import { createAcpTransport } from '../components/subscriptions/lib/antigravity-acp-transport.js';
 import { deliverAcpContext } from '../components/subscriptions/lib/antigravity-context-delivery.js';
 import { forgetBridgeTag } from '../components/subscriptions/lib/antigravity-tool-bridge.js';
@@ -78,6 +79,7 @@ test('tool results continue the same agy session without resending history or he
 	assert.doesNotMatch(f.prompts[1], /Tool protocol/u);
 	assert.ok(f.prompts[1].includes(`[id=${call.id}]\nALPHA-CONTENT`), f.prompts[1]);
 	assert.match(f.prompts[1], /call more tools if you still need them/u);
+	assert.match(f.prompts[1], /never built-in CLI tools/u);
 	assert.equal(second.at(-1).reason.kind, 'stop');
 	assert.equal(second.find((chunk) => chunk.type === 'text-delta').text, 'a.txt says ALPHA-CONTENT');
 });
@@ -120,6 +122,29 @@ test('all-invalid bridge blocks trigger one corrective retry on the same ACP ses
 	const call = chunks.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'tool-call');
 	assert.equal(call.block.name, 'read');
 	assert.equal(call.block.arguments, '{"file_path":"ok.txt"}');
+	assert.equal(chunks.at(-1).reason.kind, 'tool-calls');
+});
+
+test('denied native CLI tool triggers one corrective retry on the same ACP session', async (t) => {
+	const f = await fixture(t);
+	let calls = 0;
+	let tag;
+	f.setReply((prompt) => {
+		calls += 1;
+		if (calls === 1) {
+			tag = tagOf(prompt);
+			return ACP_DENIED_ANSWER;
+		}
+		assert.match(prompt, /built-in CLI tool/u);
+		assert.ok(prompt.includes(`<${tag}>`));
+		return `<${tag}>{"name":"read","arguments":{"file_path":"attachment.md"}}</${tag}>`;
+	});
+	const chunks = await collect(f.transport.stream(f.options([ask('read attachment.md')])));
+	assert.equal(calls, 2);
+	assert.equal(f.sessions(), 1);
+	const call = chunks.find((chunk) => chunk.type === 'block-end' && chunk.block.type === 'tool-call');
+	assert.equal(call.block.name, 'read');
+	assert.equal(call.block.arguments, '{"file_path":"attachment.md"}');
 	assert.equal(chunks.at(-1).reason.kind, 'tool-calls');
 });
 

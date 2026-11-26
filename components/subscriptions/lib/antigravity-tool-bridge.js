@@ -267,3 +267,8 @@ export function invalidCallFeedback(tag, invalid) {
 	const reasons = invalid.map((entry) => `- ${entry.reason}`).join('\n');
 	return `Your previous reply tried to call a tool, but no block was valid:\n${reasons}\nWrite the call again exactly as <${tag}>{"name":"TOOL_NAME","arguments":{...}}</${tag}> with a tool from the list and strict JSON, or answer without a tool.`;
 }
+
+/** Feedback for a bridged ACP turn where the model called a built-in CLI tool instead of a bridge block. */
+export function deniedNativeToolFeedback(tag) {
+	return `Your previous turn tried to call a built-in CLI tool, which is disabled on this route. Do not call built-in tools (such as read_file, write_file, or run_command). Call DeepSeek Harness tools only via <${tag}>{"name":"TOOL_NAME","arguments":{...}}</${tag}> blocks, or answer in plain text without calling a tool.`;
+}

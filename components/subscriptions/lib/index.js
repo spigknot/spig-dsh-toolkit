@@ -1,6 +1,6 @@
 import { createCliAdapter } from "./antigravity-cli-adapter.js";
 import { createAcpTransport } from "./antigravity-acp-transport.js";
-import { agyPromptGuard, agyRouteFix, agyToolBridge, setAgyToolBridge, agyTransport, listAgyModels, readAgyUsage, readAgyVersion, onAgyTransportChange, setAgyPromptGuard, setAgyRouteFix, setAgyTransport } from "./antigravity-cli-local.js";
+import { agyPromptGuard, agyRouteFix, agyToolBridge, setAgyToolBridge, agyTransport, debugLog, listAgyModels, readAgyUsage, readAgyVersion, onAgyTransportChange, setAgyPromptGuard, setAgyRouteFix, setAgyTransport } from "./antigravity-cli-local.js";
 import { installAgyOverflowRecovery } from "./antigravity-cli-recovery.js";
 import { COMPACTION_EFFORTS, CompactionModelStore, installCompactionRouting, summaryChunkBudget } from "./compaction-model.js";
 import z from "@deepseek-ai/schemastery";
@@ -13370,7 +13370,18 @@ function apply(ctx, config) {
 				windows: await readAgyUsage({ signal: AbortSignal.timeout(POOL_USAGE_TIMEOUT_MS) })
 			});
 			adapters.set("antigravity", adapter);
-			handles.set("antigravity", ctx.llm.registerAdapter(["antigravity"], adapter));
+			// TOOLKIT DIVERGENCE: adapter lifecycle journal (agy-debug.flag), to
+			// diagnose NO_ADAPTER after an in-process remount.
+			const mountId = Math.random().toString(36).slice(2, 10);
+			void debugLog({ lifecycle: "antigravity-register:begin", mountId, providers });
+			try {
+				handles.set("antigravity", ctx.llm.registerAdapter(["antigravity"], adapter));
+				void debugLog({ lifecycle: "antigravity-register:ok", mountId });
+			} catch (error) {
+				void debugLog({ lifecycle: "antigravity-register:failed", mountId, error: String(error?.stack ?? error).slice(0, 2000) });
+				throw error;
+			}
+			ctx.effect(() => () => { void debugLog({ lifecycle: "antigravity-unmount", mountId }); }, "dsh-plugin-subscriptions: Antigravity adapter lifecycle journal");
 			// The CLI route refuses prompts above its byte ceiling instead of letting
 			// agy drop their tail; this compacts the history (never the current
 			// request) and retries. Owned by the plugin context. With a compaction
