@@ -17,13 +17,12 @@ import { createRequire } from "node:module";
  * Resolution anchors, tried in order. The toolkit carries its own
  * `node_modules` (`@deepseek-ai/schemastery`, `yaml`), so resolving from this
  * file's own URL keeps resolution inside the toolkit whatever path the host
- * used to import it. The legacy standalone checkout anchors are best-effort
- * fallbacks (that directory may not exist on this machine).
+ * used to import it. The standalone checkouts were deleted; the toolkit is
+ * the only source — no external anchor remains.
  */
 const anchors = [
 	import.meta.url,
 	new URL("../../../package.json", import.meta.url).href,
-	"D:/Projetos/spig-dsh-thinking-provider/package.json",
 ];
 
 let schemaModule, yamlModule, lastError;
