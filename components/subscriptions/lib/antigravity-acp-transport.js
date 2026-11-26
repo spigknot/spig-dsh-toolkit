@@ -205,8 +205,10 @@ export function createAcpTransport({
     active.add(key);
     const epoch = generation;
     let emitted = false, committed = false, shouldFallback = false, rec, broken, entry;
+    let stage = 'binding-store';
     try {
       const map = await store();
+      stage = 'session-setup';
       const workspaceDir = await streamWorkspace(options.workspaceDir);
       const assertCurrent = () => {
         if (options.signal?.aborted) throw new AgyCliError('Antigravity ACP request cancelled', 'ABORTED');
@@ -232,21 +234,25 @@ export function createAcpTransport({
           await close(idle);
           assertCurrent();
         }
-        const client = clientFactory({...dirs,workspaceDir,startupTimeoutMs,turnTimeoutMs});
+        const client = clientFactory({...dirs,workspaceDir,startupTimeoutMs,turnTimeoutMs,onWarn:warn});
         rec = {client,...dirs};
         live.set(key,rec);
+        stage = 'initialize';
         await client.initialize(options.signal);
         if (incremental) {
+          stage = 'session/load';
           incremental = await client.loadSession({sessionId:entry.agySessionId,model:options.model,signal:options.signal});
           if (incremental) rec.agySessionId = entry.agySessionId;
         }
         if (!incremental) {
           if (map.delete(key)) await save();
+          stage = 'session/new';
           rec.agySessionId = await client.newSession({model:options.model,signal:options.signal});
         }
       }
       clearTimeout(rec.timer);
       const request = incremental ? {messages:options.messages.slice(entry.syncedCount+1)} : options;
+      stage = 'context-delivery';
       const payload = await deliverAcpContext(request,{contextDir:rec.contextDir,incremental,onWarn:warn,bridge});
       assertCurrent();
       // Clear the durable checkpoint before the RPC: an interrupted provider
@@ -256,6 +262,7 @@ export function createAcpTransport({
       const text = [];
       let calls = '';
       const promptAcp = (promptText) => rec.client.prompt({sessionId:rec.agySessionId,text:promptText,signal:options.signal});
+      stage = 'session/prompt';
       const source = promptAcp(payload.text);
       for await (const chunk of bridge === undefined ? source : bridged(source, bridge, (feedback) => {
         options.signal?.throwIfAborted();
@@ -286,8 +293,10 @@ export function createAcpTransport({
       active.delete(key);
     }
     if (shouldFallback) {
-      warn(`Antigravity ACP unavailable before streaming (${broken.code}); using stream-json for this turn`);
-      await debugLog({transport:'acp',fallback:true,reason:broken.code,purpose:options.purpose});
+      // Never log raw provider errors: stderr/RPC messages may contain prompt data.
+      const detail = broken.acpDiagnostic ?? (broken.code === 'TIMEOUT' ? 'ACP request timed out' : 'no safe detail available');
+      warn(`Antigravity ACP unavailable before streaming (${broken.code}, stage=${stage}, ${detail}, session=${key.slice(0,12)}); using stream-json for this turn`);
+      await debugLog({transport:'acp',fallback:true,reason:broken.code,stage,detail,session:key.slice(0,12)});
       yield* streamFallback(options,key);
     }
   }

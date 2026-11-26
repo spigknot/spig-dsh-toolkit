@@ -100,6 +100,19 @@ function hashBlock(hash, role, block) {
 function prefixDigest(hash) {
     return hash.copy().digest('base64url').slice(0, 32);
 }
+const ANTHROPIC_TOOL_ID_RE = /^[a-zA-Z0-9_-]+$/;
+/**
+ * Normalize a tool call id to Anthropic's wire pattern (`^[a-zA-Z0-9_-]+$`).
+ * Valid ids pass through unchanged so prompt caches and replay digests stay
+ * byte-identical; cross-provider ids (such as Codex's `call_...|fc_...`) map
+ * deterministically so `tool_use.id` and `tool_result.tool_use_id` still match.
+ */
+export function sanitizeAnthropicToolId(rawId) {
+    const id = String(rawId);
+    if (ANTHROPIC_TOOL_ID_RE.test(id))
+        return id;
+    return `tc_${createHash('sha256').update(id, 'utf8').digest('base64url').slice(0, 32)}`;
+}
 /**
  * The wire block an assistant message's non-reasoning block is sent as;
  * undefined for blocks the Messages API does not accept there.
@@ -109,7 +122,7 @@ function assistantWireBlock(block) {
         case 'text':
             return { type: 'text', text: block.text };
         case 'tool-call':
-            return { type: 'tool_use', id: String(block.id), name: block.name, input: parseToolInput(block.arguments) };
+            return { type: 'tool_use', id: sanitizeAnthropicToolId(block.id), name: block.name, input: parseToolInput(block.arguments) };
         case 'image':
             return 'dataBase64' in block
                 ? { type: 'image', source: { type: 'base64', media_type: block.mediaType, data: block.dataBase64 } }
@@ -366,7 +379,7 @@ export function assembleAnthropicMessages(messages, replay) {
                 throw new LlmError('tool result has no call id', 'INVALID_REQUEST');
             blocks.push({
                 type: 'tool_result',
-                tool_use_id: id,
+                tool_use_id: sanitizeAnthropicToolId(id),
                 content: toolResultContent({ type: 'tool-result', toolCallId: ToolCallId(id), content: message.content }),
                 ...message.isError === true ? { is_error: true } : {},
             });
@@ -411,7 +424,7 @@ export function assembleAnthropicMessages(messages, replay) {
                 case 'tool-result':
                     blocks.push({
                         type: 'tool_result',
-                        tool_use_id: String(block.toolCallId),
+                        tool_use_id: sanitizeAnthropicToolId(block.toolCallId),
                         content: toolResultContent(block),
                         ...block.isError === true ? { is_error: true } : {},
                     });

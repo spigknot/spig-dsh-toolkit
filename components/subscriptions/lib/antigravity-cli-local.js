@@ -187,9 +187,13 @@ export function agyToolBridge() {
 /** Bytes of the last bridge header per session: the recovery reserves them when it compacts. */
 const bridgeReserves = new Map();
 
-/** UTF-8 bytes the bridge header adds to this session's prompts (0 when it is not bridged). */
+/** Exact non-surface bytes (system prompt, bridge header, formatting delta) measured on the last CLI prompt per session. */
+const promptReserves = new Map();
+
+/** UTF-8 bytes outside the session surface (system prompt, bridge header) that recovery must reserve when compacting. */
 export function agyBridgeReserveBytes(sessionId) {
-	return bridgeReserves.get(String(sessionId)) ?? 0;
+	const key = String(sessionId);
+	return Math.max(bridgeReserves.get(key) ?? 0, promptReserves.get(key) ?? 0);
 }
 
 /**
@@ -640,6 +644,10 @@ export function createAgy({ spawn = nodeSpawn, bin = defaultBin(), timeoutMs = 6
 			if (bridge !== undefined) journal.bridge = bridge.journal;
 			const prompt = finalPrompt(buildPrompt({ messages, system }, bridge), fix, bridge?.header);
 			journal.promptBytes = Buffer.byteLength(prompt, 'utf8');
+			if (purpose !== 'compaction' && sessionId !== undefined && sessionId !== null) {
+				const nonSurface = Math.max(0, journal.promptBytes - AGY_PROMPT_OVERHEAD_BYTES - estimateMessageBytes(messages));
+				promptReserves.set(String(sessionId), nonSurface);
+			}
 			// Measured on the exact text that would go to stdin, before anything
 			// starts: a prompt over the ceiling is never sent, never cut.
 			if (guard && journal.promptBytes > MAX_AGY_PROMPT_BYTES) {

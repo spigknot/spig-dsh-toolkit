@@ -3,10 +3,22 @@ import { realpath as fsRealpath, stat as fsStat } from 'node:fs/promises';
 import path from 'node:path';
 import { AgyCliError, classifyFailure } from './antigravity-cli-local.js';
 
-const VERIFIED_CLI_VERSION = '1.5.17';
+const MIN_CLI_VERSION = [1, 5, 17];
+/** CLI versions whose ACP behavior was actually probed (initialize → prompt → load with replay). */
+export const VERIFIED_CLI_VERSIONS = ['1.5.17', '1.5.18'];
 const VERIFIED_AGENT_NAME = 'Antigravity ACP Server';
+
+export function isSupportedCliVersion(version) {
+	if (typeof version !== 'string') return false;
+	const match = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/u.exec(version.trim());
+	if (!match) return false;
+	const [major, minor, patch] = match.slice(1).map(Number);
+	const [minMajor, minMinor, minPatch] = MIN_CLI_VERSION;
+	if (major !== minMajor) return false;
+	return minor > minMinor || (minor === minMinor && patch >= minPatch);
+}
 const MAX_FRAME = 8 * 1024 * 1024;
-const transportError = (message) => new AgyCliError(message, 'ACP_TRANSPORT');
+const transportError = (message, diagnostic) => new AgyCliError(message, 'ACP_TRANSPORT', { acpDiagnostic: diagnostic });
 const aborted = () => new AgyCliError('Antigravity ACP call aborted', 'ABORTED');
 export const ACP_DENIED_ANSWER = 'No text response: Antigravity ACP allows only reads.';
 
@@ -70,6 +82,7 @@ export function createAcpClient({
 	bin = process.env.DSH_AGY_BIN?.trim() || 'agy', startupTimeoutMs = 30_000,
 	turnTimeoutMs = 180_000, shutdownGraceMs = 250, realpath = fsRealpath, stat = fsStat,
 	platform = process.platform, killTree = (child) => forceProcessTree(child, platform),
+	onWarn = () => {},
 }) {
 	const cwd = path.resolve(contextDir);
 	const readRoots = [...new Set([...(workspaceDir ? [path.resolve(workspaceDir)] : []), cwd])];
@@ -250,8 +263,16 @@ export function createAcpClient({
 			child.stderr.setEncoding('utf8');
 			child.stderr.on('data', (chunk) => { stderr = (stderr + chunk).slice(-8192); });
 			const result = await request('initialize', { protocolVersion: 1, clientCapabilities: {} }, signal, startupTimeoutMs);
-			if (result?.protocolVersion !== 1 || result?.agentInfo?.name !== VERIFIED_AGENT_NAME || result.agentInfo.version !== VERIFIED_CLI_VERSION) {
-				throw transportError(`Antigravity ACP requires protocol v1 and verified CLI ${VERIFIED_CLI_VERSION}`);
+			const reported = result?.agentInfo?.version;
+			const version = typeof reported === 'string' && /^[0-9A-Za-z.+-]{1,64}$/u.test(reported) ? reported : 'unknown';
+			const rejection = result?.protocolVersion !== 1 ? 'protocol-mismatch'
+				: result?.agentInfo?.name !== VERIFIED_AGENT_NAME ? 'agent-name-mismatch'
+				: !isSupportedCliVersion(reported) ? 'unsupported-cli-version' : undefined;
+			if (rejection) {
+				throw transportError(`Antigravity ACP handshake rejected: ${rejection} (CLI ${version})`, `${rejection}; CLI ${version}`);
+			}
+			if (!VERIFIED_CLI_VERSIONS.includes(result.agentInfo.version)) {
+				try { onWarn(`Antigravity CLI ${result.agentInfo.version} accepted by policy (>= ${MIN_CLI_VERSION.join('.')} < 2.0.0) but not yet verified; ACP behavior was verified on ${VERIFIED_CLI_VERSIONS.join(', ')}. If ACP misbehaves, verify the new CLI and update VERIFIED_CLI_VERSIONS.`); } catch {}
 			}
 			if (signal?.aborted) throw aborted();
 			if (stopping) throw transportError('Antigravity ACP process closed during initialize');
@@ -267,7 +288,7 @@ export function createAcpClient({
 
 	function verifyDefaultMode(result) {
 		if (result?.modes?.currentModeId !== 'default') {
-			const error = transportError('Antigravity ACP session is not in default mode');
+			const error = transportError('Antigravity ACP session is not in default mode', 'session-mode-not-default');
 			stop(error);
 			throw error;
 		}
