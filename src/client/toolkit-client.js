@@ -396,6 +396,21 @@ function createToolkitClient(require, componentFactories) {
 
   function apply(ctx) {
     ctx.effect(() => ctx.locale.register(NS, LOCALES), "spig-dsh-toolkit: locales");
+    // The compaction-model picker now lives only in Settings -> Spig Toolkit
+    // (GeneralConfigsPage). Hide the duplicate card in Settings -> Subscriptions
+    // without forking the vendored subscriptions bundle.
+    ctx.effect(() => {
+      if (typeof document === "undefined") return;
+      const styleId = "spig-hide-subscriptions-compaction";
+      let el = document.getElementById(styleId);
+      if (!el) {
+        el = document.createElement("style");
+        el.id = styleId;
+        el.textContent = '[data-subscriptions-compaction-model]{display:none !important;}';
+        document.head.appendChild(el);
+      }
+      return () => { try { if (el.parentNode) el.parentNode.removeChild(el); } catch {} };
+    }, "spig-dsh-toolkit: hide subscriptions compaction picker");
     const connection = ctx.get("connection");
     const t = ctx.locale.bind(NS);
     const controller = createToolkitClientController(ctx, connection);
