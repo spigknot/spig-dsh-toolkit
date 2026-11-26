@@ -22,12 +22,29 @@ spig-dsh-toolkit/
 │   │   └── rpc.js                  # Rotas Fetch `/api/spig-toolkit.*`
 │   ├── components/
 │   │   ├── subscriptions.js        # Definição do componente Subscriptions
-│   │   └── thinking-provider.js    # Definição do componente Thinking Provider
+│   │   ├── thinking-provider.js    # Definição do componente Thinking Provider
+│   │   ├── general-configs.js      # Definição do componente General Configs (defaultEnabled: false)
+│   │   └── general-configs/        # Store atômico, Windows Startup (3080) e RPC /api/spig-general.*
 │   └── client/
-│       └── toolkit-client.js       # UI de Settings (Spig Toolkit) + orquestrador Client
+│       ├── toolkit-client.js       # UI de Settings + Plugins detail (plugins.bundle.config) + orquestrador
+│       └── general-configs-client.js # UI de General Configs, Sidebar Bottom, Session Search/lupa e Compactação
 ├── components/                     # Runtime encapsulado dos componentes integrados
+│   ├── general-configs/autostart/  # Wrapper 3080 (dsh-navegador/local-web-proxy) + supervisor Windows embutidos
 │   ├── subscriptions/
 │   └── thinking-provider/
+├── cordis.patch.yml               # Camada do bundle: registra o toolkit + ativa
+│                                  # `session-query-sqlite` (FTS5, openAt: first-search,
+│                                  # path via `dshHomePath('session-search.db')`)
+│
+│ Nota sobre o supervisor/restart: `querySupervisor`/`requestRestart` adotam
+│ o diretório de estado que estiver rastreando a instância viva (embutido ou
+│ o legado `D:\Projetos\DeepSeekHarness\dsh-autostart`). Instalações novas
+│ usam sempre a cópia embutida; a pasta legada nunca é dependência.
+│ O restart real é suicídio gracioso do próprio host quando ele prova viver
+│ sob o wrapper rastreado — o wrapper encerra o proxy e o supervisor reboota
+│ a árvore (~15s). Um `-Restart` disparado de DENTRO da árvore-alvo é reaped
+│ pelo próprio `taskkill /T` antes de concluir (no-op silencioso); por isso
+│ ele só é usado contra instância externa.
 ├── scripts/
 │   └── build.mjs                   # Gera `lib/client.js` combinando toolkit + clients dos componentes
 └── test/

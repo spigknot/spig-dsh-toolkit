@@ -21,6 +21,7 @@ function createToolkitClient(require, componentFactories) {
       error: "Error",
       loading: "Loading components...",
       refresh: "Refresh",
+      openSettings: "Open settings",
       preservedNote: "Component settings are preserved when disabled.",
       allDisabledNote: "All components are currently disabled. The toolkit remains idle with no active hooks or providers.",
     },
@@ -34,6 +35,7 @@ function createToolkitClient(require, componentFactories) {
       error: "Erro",
       loading: "Carregando componentes...",
       refresh: "Atualizar",
+      openSettings: "Abrir configurações",
       preservedNote: "As configurações individuais são preservadas mesmo com o componente desativado.",
       allDisabledNote: "Todos os componentes estão desativados. O toolkit permanece ocioso sem hooks ou provedores ativos.",
     },
@@ -114,6 +116,24 @@ function createToolkitClient(require, componentFactories) {
     );
   }
 
+  function openSettingsSection(sectionId) {
+    if (typeof document === "undefined" || !sectionId) return;
+    const navItems = document.querySelectorAll("[data-settings-section], button, [role='tab'], [role='menuitem']");
+    const targetLabels = {
+      "spig-general-configs": ["General Configs", "Configurações Gerais"],
+      "subscriptions": ["Subscriptions", "Assinaturas"],
+      "thinking-provider": ["Thinking Provider"],
+    }[sectionId] ?? [sectionId];
+    for (const el of navItems) {
+      const attr = el.getAttribute?.("data-settings-section");
+      const txt = (el.textContent || "").trim();
+      if (attr === sectionId || targetLabels.includes(txt)) {
+        el.click();
+        return;
+      }
+    }
+  }
+
   function SpigToolkitSection({ controller, t }) {
     const [components, setComponents] = useState(controller.getComponents());
     const [busyId, setBusyId] = useState(null);
@@ -137,7 +157,8 @@ function createToolkitClient(require, componentFactories) {
       }
     }, [controller]);
 
-    const allDisabled = components.length > 0 && components.every((c) => !c.enabled);
+    const visibleComponents = components.filter((c) => c.id !== "general-configs");
+    const allDisabled = visibleComponents.length > 0 && visibleComponents.every((c) => !c.enabled);
 
     return h(
       "div",
@@ -184,12 +205,12 @@ function createToolkitClient(require, componentFactories) {
         },
         error,
       ),
-      components.length === 0
+      visibleComponents.length === 0
         ? h("div", { style: { fontSize: "13px", opacity: 0.7 } }, t("loading"))
         : h(
           "div",
           { style: { display: "flex", flexDirection: "column", gap: "12px" } },
-          components.map((component) =>
+          visibleComponents.map((component) =>
             h(
               "div",
               {
@@ -212,6 +233,23 @@ function createToolkitClient(require, componentFactories) {
                   { style: { display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" } },
                   h("strong", { style: { fontSize: "14px" } }, component.title),
                   h(StatusBadge, { component, t }),
+                  component.active && component.settingsSectionId && h(
+                    "button",
+                    {
+                      type: "button",
+                      onClick: () => openSettingsSection(component.settingsSectionId),
+                      style: {
+                        padding: "2px 8px",
+                        borderRadius: "6px",
+                        border: "1px solid var(--dsh-border, rgba(148,163,184,0.3))",
+                        background: "transparent",
+                        color: "inherit",
+                        fontSize: "11px",
+                        cursor: "pointer",
+                      },
+                    },
+                    t("openSettings"),
+                  ),
                 ),
                 h(ToggleSwitch, {
                   checked: component.enabled,
@@ -364,11 +402,19 @@ function createToolkitClient(require, componentFactories) {
 
     ctx.effect(() => () => controller.disposeAll(), "spig-dsh-toolkit: client component forks");
 
-    ctx.slots.inject("settings.section", () => ctx.slots.register({
-      name: "settings.section",
-      id: "spig-toolkit",
-      order: 85,
-      label: () => t("nav"),
+    // Mount General Configs always-on inside Settings -> Spig Toolkit
+    const generalFactory = componentFactories["general-configs"];
+    if (typeof generalFactory === "function") {
+      const generalMod = generalFactory(require);
+      if (generalMod && typeof generalMod.mountInToolkit === "function") {
+        generalMod.mountInToolkit(ctx, connection);
+      }
+    }
+
+    // Component toggles live in Plugins -> Spig DSH Toolkit
+    ctx.slots.inject("plugins.bundle.config", () => ctx.slots.register({
+      name: "plugins.bundle.config",
+      key: "spig-dsh-toolkit",
       inject: () => ({ controller, t }),
     }, SpigToolkitSection));
 

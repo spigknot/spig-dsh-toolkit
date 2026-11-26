@@ -10,6 +10,9 @@ import { createComponentRegistry } from "../src/core/registry.js";
 import { ToolkitComponentManager } from "../src/core/lifecycle.js";
 import { detectLegacyConflict } from "../src/core/conflict-detector.js";
 import { dispatchToolkitRpc } from "../src/core/rpc.js";
+import { GeneralConfigsStore } from "../src/components/general-configs/store.js";
+import { dispatchGeneralRpc } from "../src/components/general-configs/rpc.js";
+import { DEFAULT_COMPONENTS } from "../src/components/index.js";
 
 function makeTempDir() {
   return mkdtempSync(join(tmpdir(), "spig-dsh-toolkit-test-"));
@@ -254,4 +257,74 @@ test("built lib/client.js loads via window.__ModuleLoader__ and exports apply/in
   assert.equal(exportsObj.name, "spig-dsh-toolkit");
   assert.deepEqual([...exportsObj.inject], ["slots", "connection", "locale"]);
   assert.equal(typeof exportsObj.apply, "function");
+});
+
+test("GeneralConfigsStore persists sidebarBottom sub-toggles atomically and defaults to false", async () => {
+  const dir = makeTempDir();
+  const filePath = join(dir, "general-configs.json");
+  try {
+    const store1 = new GeneralConfigsStore({ filePath });
+    assert.deepEqual(store1.snapshot(), {
+      sidebarBottom: { sessionSearch: false, restartButton: false, settingsGear: false },
+    });
+
+    await store1.update({ sidebarBottom: { sessionSearch: true, settingsGear: true } });
+    const store2 = new GeneralConfigsStore({ filePath });
+    assert.deepEqual(store2.snapshot(), {
+      sidebarBottom: { sessionSearch: true, restartButton: false, settingsGear: true },
+    });
+
+    const deps = {
+      store: store2,
+      startup: {
+        getStatus: async () => ({ installed: false }),
+        setEnabled: async (e) => ({ installed: e }),
+        requestRestart: async () => ({ mode: "supervisor" }),
+      },
+      compaction: { getView: async () => ({ current: null, providers: [] }), set: async () => ({ current: null, providers: [] }) },
+    };
+    const res = await dispatchGeneralRpc(deps, "get", {});
+    assert.equal(res.ok, true);
+    assert.equal(res.value.settings.sidebarBottom.sessionSearch, true);
+
+    const upd = await dispatchGeneralRpc(deps, "update", { sidebarBottom: { restartButton: true } });
+    assert.equal(upd.ok, true);
+    assert.equal(upd.value.settings.sidebarBottom.restartButton, true);
+
+    const rst = await dispatchGeneralRpc(deps, "restart", {});
+    assert.equal(rst.ok, true);
+    assert.equal(rst.value.mode, "supervisor");
+
+    const bad = await dispatchGeneralRpc(deps, "nope", {});
+    assert.equal(bad.ok, false);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+import { DEFAULT_AUTOSTART_DIR, createStartupController } from "../src/components/general-configs/startup.js";
+import { existsSync } from "node:fs";
+
+test("DEFAULT_COMPONENTS lists only toggleable components and autostart scripts are bundled", () => {
+  assert.deepEqual(DEFAULT_COMPONENTS.map((c) => c.id), ["subscriptions", "thinking-provider"]);
+  assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "setup.cmd")), true);
+  assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "..", "dsh-navegador.mjs")), true);
+  assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "..", "local-web-proxy.mjs")), true);
+});
+
+test("querySupervisor never throws and adopts whichever state dir tracks the live instance", async () => {
+  const dir = makeTempDir();
+  try {
+    const ctl = createStartupController({ autostartDir: dir });
+    const status = await ctl.querySupervisor();
+    assert.equal(status.supported, process.platform === "win32");
+    assert.equal(typeof status.managed, "boolean");
+    assert.equal(typeof status.dir, "string");
+    assert.equal(typeof status.inManagedTree, "boolean");
+    // Empty dir holds no state: a managed result proves adoption of another
+    // candidate dir (the legacy location); unmanaged means no live supervisor.
+    if (status.managed) assert.notEqual(status.dir, dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

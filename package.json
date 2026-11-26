@@ -1,7 +1,7 @@
 {
   "name": "spig-dsh-toolkit",
-  "version": "1.0.0",
-  "description": "Modular DeepSeek Harness plugin unifying Subscriptions (Codex/Claude/Grok/Copilot/Antigravity) and Thinking Provider with independent component toggles.",
+  "version": "1.1.8",
+  "description": "Modular DeepSeek Harness plugin unifying Subscriptions, Thinking Provider, and General Configs (Sidebar Bottom, Session Search, Windows Autostart, Compaction) with independent component toggles.",
   "license": "MIT",
   "type": "module",
   "icon": "./icon.svg",

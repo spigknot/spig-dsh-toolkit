@@ -5,3 +5,12 @@
 - insert:
     - id: spig-dsh-toolkit
       name: spig-dsh-toolkit
+
+# Full-text session search (FTS5 do próprio DSH), aberto na primeira busca.
+# Sem isto, `sessions.search` falha com SESSION_QUERY_SEARCH_DISABLED e a
+# busca da sidebar só filtra títulos. O índice é derivado e descartável
+# (~8 MB para poucas sessões); pode ser apagado a qualquer momento.
+- id: session-query-sqlite
+  config:
+    path: !!js dshHomePath('session-search.db')
+    openAt: first-search

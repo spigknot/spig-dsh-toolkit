@@ -1,7 +1,7 @@
 {
   "meta": {
     "title": "Spig DSH Toolkit",
-    "description": "Modular toolkit unifying Subscriptions and Thinking Provider with independent component toggles.",
+    "description": "Modular toolkit unifying Subscriptions, Thinking Provider, and General Configs with independent component toggles.",
     "detail": "docs/ARCHITECTURE.md"
   }
 }
