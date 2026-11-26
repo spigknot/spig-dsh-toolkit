@@ -91,8 +91,8 @@ spig-dsh-toolkit/
 
 ## Patches aplicados sobre código vendorizado
 
-O diretório `components/` contém cópias integrais dos runtimes originais, com
-**uma única divergência intencional** (verificada por hash contra os projetos
+O diretório `components/` contém cópias dos runtimes originais, com
+**duas divergências intencionais** (verificadas por hash contra os projetos
 de origem):
 
 - `components/thinking-provider/lib/client.js` → `componentSwitchesFrom()`:
@@ -103,6 +103,17 @@ de origem):
   Sem isso, o cliente marcaria tudo como `"off"` e pularia o registro da
   slidebar de reasoning (`conversation.input.model`) e do painel de
   configurações do Thinking Provider.
+- Fail-fast em espera longa de cota (`components/subscriptions/lib/index.js` +
+  `components/subscriptions/lib/providers/rate-limit.js`, espelhado com
+  comentário `TOOLKIT DIVERGENCE`):
+  `DEFAULT_RATE_LIMIT_MAX_WAIT_MS` reduzido de 6 h para 2 min. A política de
+  retry (`subscriptionRetryPolicy`) só aceita esperas divulgadas dentro de
+  `maxDelayMs`; com o default anterior, um reset de 4 h (pool esgotado)
+  estacionava o turno em `Retrying model request (1/10) · 14474s`, que o botão
+  parar não abortava de forma confiável. Com 2 min, resets longos falham o
+  turno na hora com o horário de recuperação na mensagem, e o usuário troca de
+  modelo/conta ou aguarda manualmente. Quem quiser o comportamento antigo
+  define `rateLimit.maxWaitMs: 21600000` explícito no config do provider.
 
 **Ao ressincronizar `components/` com uma nova versão de um plugin original,
 reaplique o patch acima e rode `node scripts/build.mjs`** (o `lib/client.js`

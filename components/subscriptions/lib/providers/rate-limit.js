@@ -30,8 +30,18 @@ const EPOCH_SECONDS_FLOOR = 1_000_000_000;
 const EPOCH_MILLIS_FLOOR = 1_000_000_000_000;
 /** Node's maximum timer delay; a longer wait cannot be scheduled at all. */
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
-/** Default ceiling on a rate-limit wait: six hours covers a five-hour session window with slack. */
-export const DEFAULT_RATE_LIMIT_MAX_WAIT_MS = 6 * 60 * 60 * 1_000;
+/**
+ * Default ceiling on a rate-limit wait: two minutes. A disclosed reset past
+ * this fails the turn immediately with the reset time attached (the retry
+ * plugin only waits out resets within the policy's `maxDelayMs`), instead of
+ * parking an interactive session for hours on a quota window the user would
+ * rather wait out by hand or route around by switching model/account. Set
+ * `maxWaitMs` explicitly to wait out a full session window again.
+ *
+ * TOOLKIT DIVERGENCE (fail-fast on long quota waits): upstream default was six
+ * hours; see docs/ARCHITECTURE.md "Patches aplicados sobre código vendorizado".
+ */
+export const DEFAULT_RATE_LIMIT_MAX_WAIT_MS = 2 * 60 * 1_000;
 /**
  * Interpret a bare numeric rate-limit value, which providers write in three
  * shapes: epoch milliseconds, epoch seconds, or a delay in seconds. The
@@ -285,7 +295,7 @@ export const DEFAULT_RETRY = Object.freeze({
     maxDelayMs: 60_000,
     jitterRatio: 0.2,
 });
-/** Waiting behavior a route falls back to when the plugin passed none (waiting on, six-hour ceiling). */
+/** Waiting behavior a route falls back to when the plugin passed none (waiting on, two-minute ceiling). */
 export const DEFAULT_RATE_LIMIT_WAIT = Object.freeze({
     wait: true,
     maxWaitMs: DEFAULT_RATE_LIMIT_MAX_WAIT_MS,
@@ -309,8 +319,10 @@ export function resolveRateLimitWait(config, path) {
 }
 /**
  * Resolve one route's retry policy, widening the delay ceiling to the
- * configured wait so a disclosed reset hours out is accepted rather than
- * refused.
+ * configured wait so a disclosed reset within it is accepted rather than
+ * refused. A disclosed reset past the ceiling fails the turn immediately
+ * with the reset time attached — with the two-minute default, an hours-out
+ * quota reset ends the turn at once instead of parking the session.
  *
  * The ceiling is shared with local exponential backoff, so widening it also
  * raises how long an unrelated transient failure may back off for. That stays

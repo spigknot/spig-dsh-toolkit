@@ -24,7 +24,7 @@ import type { ResolvedRetryPolicy } from '@deepseek-ai/dsh-llm';
  * @returns epoch milliseconds of the reset, or undefined when the provider said nothing.
  */
 export type RateLimitResetReader = (response: Response, body: string, now: number) => number | undefined;
-/** Default ceiling on a rate-limit wait: six hours covers a five-hour session window with slack. */
+/** Default ceiling on a rate-limit wait: two minutes; longer disclosed resets fail the turn with the reset time attached. */
 export declare const DEFAULT_RATE_LIMIT_MAX_WAIT_MS: number;
 /**
  * Interpret a bare numeric rate-limit value, which providers write in three
@@ -162,10 +162,10 @@ export interface RateLimitWait {
 export interface RateLimitConfig {
     /** Wait for a disclosed reset instead of failing the turn (default true). */
     wait?: boolean;
-    /** Ceiling on one wait in milliseconds (default six hours). */
+    /** Ceiling on one wait in milliseconds (default two minutes). */
     maxWaitMs?: number;
 }
-/** Waiting behavior a route falls back to when the plugin passed none (waiting on, six-hour ceiling). */
+/** Waiting behavior a route falls back to when the plugin passed none (waiting on, two-minute ceiling). */
 export declare const DEFAULT_RATE_LIMIT_WAIT: RateLimitWait;
 /**
  * Validate and default the rate-limit waiting config.

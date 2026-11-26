@@ -304,12 +304,41 @@ test("GeneralConfigsStore persists sidebarBottom sub-toggles atomically and defa
 
 import { DEFAULT_AUTOSTART_DIR, createStartupController } from "../src/components/general-configs/startup.js";
 import { existsSync } from "node:fs";
+import {
+  DEFAULT_RATE_LIMIT_MAX_WAIT_MS,
+  DEFAULT_RATE_LIMIT_WAIT,
+  DEFAULT_RETRY,
+  resolveRateLimitWait,
+  subscriptionRetryPolicy,
+} from "../components/subscriptions/lib/providers/rate-limit.js";
 
 test("DEFAULT_COMPONENTS lists only toggleable components and autostart scripts are bundled", () => {
   assert.deepEqual(DEFAULT_COMPONENTS.map((c) => c.id), ["subscriptions", "thinking-provider"]);
   assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "setup.cmd")), true);
   assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "..", "dsh-navegador.mjs")), true);
   assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "..", "local-web-proxy.mjs")), true);
+});
+
+test("quota waits fail fast by default: disclosed resets past 2 min end the turn", () => {
+  // TOOLKIT DIVERGENCE: default ceiling is 2 min, not the upstream 6 h, so a
+  // quota reset hours out (e.g. pool exhausted, recovers in ~4 h) fails the
+  // turn immediately with the recovery time instead of parking the session
+  // on `Retrying model request (1/10)` for hours.
+  assert.equal(DEFAULT_RATE_LIMIT_MAX_WAIT_MS, 120_000);
+  const wait = resolveRateLimitWait(undefined, "test: rateLimit");
+  assert.deepEqual({ ...wait }, { wait: true, maxWaitMs: 120_000 });
+  const policy = subscriptionRetryPolicy(DEFAULT_RETRY, DEFAULT_RATE_LIMIT_WAIT, "test");
+  // The retry plugin only waits out disclosed resets within maxDelayMs; a
+  // 4-hour quota reset is far past the 2-minute ceiling.
+  assert.equal(policy.maxDelayMs, 120_000);
+  assert.ok(14_521_000 > policy.maxDelayMs);
+  // Explicit opt-in still waits out a full session window.
+  const patient = subscriptionRetryPolicy(
+    DEFAULT_RETRY,
+    resolveRateLimitWait({ wait: true, maxWaitMs: 21_600_000 }, "test: rateLimit"),
+    "test",
+  );
+  assert.equal(patient.maxDelayMs, 21_600_000);
 });
 
 test("querySupervisor never throws and adopts whichever state dir tracks the live instance", async () => {
