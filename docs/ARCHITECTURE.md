@@ -48,7 +48,20 @@ spig-dsh-toolkit/
 ├── scripts/
 │   └── build.mjs                   # Gera `lib/client.js` combinando toolkit + clients dos componentes
 └── test/
-    └── toolkit.test.mjs            # Testes automatizados de ciclo de vida, persistência, conflitos e bundle
+    ├── toolkit.test.mjs            # Ciclo de vida, persistência, conflitos e bundle
+    ├── anthropic-tool-id.test.mjs  # sanitizeAnthropicToolId (Codex → Claude)
+    ├── antigravity-acp-client.test.mjs      # Handshake ACP, política de versão do CLI, fail-closed
+    ├── antigravity-acp-transport.test.mjs   # Roteador ACP, fallback só pré-output, binding persistido
+    ├── antigravity-acp-bridge.test.mjs      # Bridge header + resume com bridgeTag persistida
+    ├── antigravity-acp-dsh.test.mjs         # Integração DSH runtime (pula sem DSH instalado)
+    ├── antigravity-cli-adapter.test.mjs / antigravity-cli-catalog.test.mjs
+    ├── antigravity-cli-local.test.mjs       # buildPrompt, classificação de falha, versão do CLI
+    ├── antigravity-cli-recovery.test.mjs    # Overflow recovery, compactação, reserva de prompt
+    ├── antigravity-cli-overflow-dsh.test.mjs # Integração recovery via DSH runtime
+    ├── antigravity-context-delivery.test.mjs # Entrega incremental de contexto ao ACP
+    ├── antigravity-tool-bridge*.test.mjs    # Ponte de tool calling DSH ↔ agy (incl. integração DSH)
+    ├── compaction-model.test.mjs            # Roteamento do modelo de compactação
+    └── provider-settings-contract.test.mjs  # Contrato do bundle: transport/bridge só Antigravity
 ```
 
 ## Como funciona o isolamento por componente
@@ -89,11 +102,16 @@ spig-dsh-toolkit/
 4. **Se o componente tiver UI Client**: adicione sua entrada ao array `CLIENT_COMPONENTS` em `scripts/build.mjs` e execute `npm run build`.
 5. **Valide**: execute `npm run check && npm test`.
 
-## Patches aplicados sobre código vendorizado
+## Fonte primária do componente Subscriptions + patches
 
-O diretório `components/` contém cópias dos runtimes originais, com
-**duas divergências intencionais** (verificadas por hash contra os projetos
-de origem):
+O repositório legado `spig-dsh-subscriptions` foi **descontinuado**. Toda a
+evolução da rota `subscriptions` (incluindo transporte ACP do Google
+Antigravity, tool bridge, recovery de overflow e tradutor Anthropic) agora vive
+**diretamente em `components/subscriptions/lib/` neste repo** — ele é a fonte
+primária, não mais um espelho. Não ressincronize a partir do repo antigo; edite
+aqui e porte os testes em `test/` junto (`npm test` protege as regressões).
+
+Divergências intencionais mantidas com comentário `TOOLKIT DIVERGENCE`:
 
 - `components/thinking-provider/lib/client.js` → `componentSwitchesFrom()`:
   quando o inventário do Host não contém nenhuma das 7 entradas legadas
@@ -104,8 +122,7 @@ de origem):
   slidebar de reasoning (`conversation.input.model`) e do painel de
   configurações do Thinking Provider.
 - Fail-fast em espera longa de cota (`components/subscriptions/lib/index.js` +
-  `components/subscriptions/lib/providers/rate-limit.js`, espelhado com
-  comentário `TOOLKIT DIVERGENCE`):
+  `components/subscriptions/lib/providers/rate-limit.js`):
   `DEFAULT_RATE_LIMIT_MAX_WAIT_MS` reduzido de 6 h para 2 min. A política de
   retry (`subscriptionRetryPolicy`) só aceita esperas divulgadas dentro de
   `maxDelayMs`; com o default anterior, um reset de 4 h (pool esgotado)
@@ -115,7 +132,29 @@ de origem):
   modelo/conta ou aguarda manualmente. Quem quiser o comportamento antigo
   define `rateLimit.maxWaitMs: 21600000` explícito no config do provider.
 
-**Ao ressincronizar `components/` com uma nova versão de um plugin original,
-reaplique o patch acima e rode `node scripts/build.mjs`** (o `lib/client.js`
-é gerado e commitado, e o build é determinístico: rebuild sem mudanças de
-fonte produz byte-identical).
+## Política de versão do `agy` CLI (transporte ACP)
+
+- `components/subscriptions/lib/antigravity-acp-client.js`:
+  `MIN_CLI_VERSION = [1, 5, 17]`, `VERIFIED_CLI_VERSIONS = ['1.5.17', '1.5.18']`,
+  `isSupportedCliVersion()` aceita `>= 1.5.17 < 2.0.0` (sufixos `-beta`/`+build`
+  tolerados). Versões `1.x` aceitas mas ainda não verificadas emitem um `onWarn`
+  único pedindo verificação e atualização de `VERIFIED_CLI_VERSIONS`; `< 1.5.17`,
+  `2.x` ou malformadas rejeitam o handshake com `ACP_TRANSPORT`
+  (`unsupported-cli-version`) e caem no `stream-json` só antes do primeiro chunk.
+- Diagnóstico estruturado: rejeição carrega `acpDiagnostic`
+  (`protocol-mismatch` / `agent-name-mismatch` / `unsupported-cli-version`);
+  `antigravity-acp-transport.js` loga fallback como
+  `code + stage + detail + session` sem vazar prompt (`detail =
+  broken.acpDiagnostic ?? 'ACP request timed out'`), via `warn()` + `debugLog`
+  (visível com `DSH_AGY_DEBUG=1`).
+- `antigravity-cli-local.js`: `promptReserves` contabiliza `options.system`
+  (~38–40 KB) no recovery para não subestimar o teto de 180 KB.
+- `translate/anthropic.js` (+ espelho no bundle `index.js`):
+  `sanitizeAnthropicToolId` determinístico (`tc_` + `sha256(id).base64url[0:32]`,
+  IDs válidos `^[a-zA-Z0-9_-]+$` intactos) para histórico Codex
+  (`call_...|fc_...`) não quebrar a API Anthropic com HTTP 400.
+
+**Alterações em `components/*/lib/*.js` (Host-side) exigem reinício completo do
+DSH** (supervisor `dsh-navegador.mjs); `node scripts/build.mjs` só reconstrói
+`lib/client.js`. O build é determinístico: rebuild sem mudanças de fonte produz
+byte-identical.
