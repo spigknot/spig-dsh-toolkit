@@ -1,5 +1,5 @@
 import * as subscriptionsModule from "../../components/subscriptions/lib/index.js";
-import { debugLog } from "../../components/subscriptions/lib/antigravity-cli-local.js";
+import { mountWithLifecycleJournal } from "../../components/subscriptions/lib/lifecycle-journal.js";
 
 /**
  * Subscriptions component definition.
@@ -21,17 +21,11 @@ export const subscriptionsComponent = {
     name: "spig-dsh-toolkit:subscriptions",
     inject: subscriptionsModule.inject ?? ["llm"],
     apply(ctx, config) {
-      // Lifecycle journal (only with agy-debug.flag / DSH_AGY_DEBUG=1).
-      void debugLog({ lifecycle: "subscriptions-mount:begin", pid: process.pid });
-      ctx.effect(() => () => { void debugLog({ lifecycle: "subscriptions-unmount" }); });
-      try {
-        const result = subscriptionsModule.apply(ctx, config ?? {});
-        void debugLog({ lifecycle: "subscriptions-mount:returned" });
-        return result;
-      } catch (error) {
-        void debugLog({ lifecycle: "subscriptions-mount:failed", error: String(error?.stack ?? error).slice(0, 2000) });
-        throw error;
-      }
+      return mountWithLifecycleJournal(ctx, {
+        component: "subscriptions",
+        apply: subscriptionsModule.apply,
+        config: config ?? {},
+      });
     },
   },
 };
