@@ -113,13 +113,20 @@ function atomicWrite(dest, bytes) {
   }
 }
 
+export const AUTOSTART_MANIFEST_VERSION = 2;
+
+function writeAutostartConfig(stateDir, bindMode) {
+  mkdirSync(stateDir, { recursive: true });
+  atomicWrite(join(stateDir, "config.json"), JSON.stringify({ version: 1, bindMode }, null, 2) + "\n");
+}
+
 export function syncAutostartRuntime({ sourceRoot = DEFAULT_BUNDLE_AUTOSTART_ROOT, runtimeDir, packageVersion = readPackageVersion() }) {
   const files = readBundle(sourceRoot);
   const sourceSha256 = bundleDigest(files);
   const manifestPath = join(runtimeDir, "manifest.json");
   const previous = readJsonSafe(manifestPath);
   const result = { upToDate: true, sourceSha256, runtimeDir, manifestPath };
-  if (previous?.sourceSha256 === sourceSha256 && AUTOSTART_RUNTIME_FILES.every(rel => existsSync(join(runtimeDir, rel)))) {
+  if (previous?.version === AUTOSTART_MANIFEST_VERSION && previous?.sourceSha256 === sourceSha256 && AUTOSTART_RUNTIME_FILES.every(rel => existsSync(join(runtimeDir, rel)))) {
     return { synced: false, ...result };
   }
   mkdirSync(join(runtimeDir, "dsh-autostart"), { recursive: true });
@@ -127,7 +134,7 @@ export function syncAutostartRuntime({ sourceRoot = DEFAULT_BUNDLE_AUTOSTART_ROO
   const launcherSha256 = createHash("sha256").update(files.get(`dsh-autostart/${LAUNCHER}`)).digest("hex");
   const syncedAt = new Date().toISOString();
   const launcherSyncedAt = previous?.launcherSha256 === launcherSha256 ? previous.launcherSyncedAt ?? syncedAt : syncedAt;
-  atomicWrite(manifestPath, JSON.stringify({ version: 1, packageVersion, sourceSha256, launcherSha256, syncedAt, launcherSyncedAt, files: AUTOSTART_RUNTIME_FILES }, null, 2) + "\n");
+  atomicWrite(manifestPath, JSON.stringify({ version: AUTOSTART_MANIFEST_VERSION, packageVersion, sourceSha256, launcherSha256, syncedAt, launcherSyncedAt, files: AUTOSTART_RUNTIME_FILES }, null, 2) + "\n");
   return { synced: true, ...result, previousSha256: previous?.sourceSha256 ?? null };
 }
 export const DEFAULT_TASK_NAME = "DSH Browser Supervisor";
@@ -192,6 +199,11 @@ export function createStartupController(options = {}) {
     if (!existsSync(manifestPath) && !existsSync(join(runtimeAutostartDir, LAUNCHER))) {
       return { skipped: true, reason: "not-installed" };
     }
+    const previousManifest = readJsonSafe(manifestPath);
+    const configPath = join(stateDir, "config.json");
+    if (previousManifest?.version === 1 && !existsSync(configPath)) {
+      writeAutostartConfig(stateDir, "lan-tailscale");
+    }
     const res = syncAutostartRuntime({ sourceRoot: bundleRoot, runtimeDir });
     if (res.synced) onWarn?.(`[autostart] runtime staged re-synced (${res.previousSha256?.slice(0, 8) ?? "none"} -> ${res.sourceSha256.slice(0, 8)}); wrapper changes apply on next DSH restart, launcher changes apply on next logon or supervisor restart.`);
     return { skipped: false, ...res };
@@ -209,6 +221,7 @@ export function createStartupController(options = {}) {
     const webMeta = readJsonSafe(join(runDir, "dsh-web.json"));
     const paused = existsSync(join(runDir, "pause.sentinel")) || existsSync(join(runDir, "stop.sentinel"));
     const manifest = readJsonSafe(manifestPath);
+    const config = readJsonSafe(join(stateDir, "config.json"));
     const syncedAt = Date.parse(manifest?.launcherSyncedAt);
     const startedAt = Date.parse(supervisorMeta?.startTimeUtc);
     const supervisorOutdated = Number.isFinite(syncedAt) && Number.isFinite(startedAt) && syncedAt > startedAt;
@@ -222,6 +235,7 @@ export function createStartupController(options = {}) {
       runtimeDir,
       runtimeSynced: Boolean(manifest),
       supervisorOutdated,
+      bindMode: config?.bindMode ?? null,
       taskName,
       installed: task.installed,
       taskState: task.state,
@@ -234,22 +248,30 @@ export function createStartupController(options = {}) {
     };
   }
 
-  async function setEnabled(enabled) {
+  async function setEnabled(enabled, setOptions = {}) {
     if (typeof enabled !== "boolean") {
       throw new Error("startup enabled flag must be a boolean");
     }
     if (process.platform !== "win32") {
       throw new Error("Windows logon autostart is only supported on Windows");
     }
-    if (enabled) syncAutostartRuntime({ sourceRoot: bundleRoot, runtimeDir });
+    const requestedBindMode = setOptions?.bindMode;
+    if (enabled) {
+      if (!existsSync(join(stateDir, "config.json")) && !existsSync(manifestPath)) {
+        writeAutostartConfig(stateDir, requestedBindMode || "loopback");
+      }
+      syncAutostartRuntime({ sourceRoot: bundleRoot, runtimeDir });
+    }
     const filename = "install-supervisor.ps1";
     const staged = join(runtimeAutostartDir, filename);
     const cwd = enabled || existsSync(staged) ? runtimeAutostartDir : bundleAutostartDir;
     const script = join(cwd, filename);
     if (!existsSync(script)) throw new Error(`installer not found at ${script}`);
+    const args = ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", enabled ? "Install" : "Remove", "-StateDir", stateDir];
+    if (enabled && requestedBindMode) args.push("-BindMode", requestedBindMode);
     const { stdout, stderr } = await execFileAsync(
       powershellExe(),
-      ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", enabled ? "Install" : "Remove", "-StateDir", stateDir],
+      args,
       { cwd, windowsHide: true, timeout: 30000 },
     );
     const status = await getStatus();

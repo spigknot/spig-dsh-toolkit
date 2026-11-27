@@ -4,6 +4,10 @@ param(
   [string]$StateDir = '',
   [ValidateSet('3080')]
   [int]$Port = 3080,
+  [ValidateSet('', 'loopback', 'lan-tailscale')]
+  [string]$BindMode = '',
+  [string]$DshInstallDir = '',
+  [string]$NodePath = '',
   [switch]$SkipSelfTreeGuard
 )
 
@@ -31,7 +35,7 @@ function Set-UserDshPath([bool]$Install) {
   $env:Path = if ($Install) { "$shimDir;$env:Path" } else { ($env:Path -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ine $shimDir.TrimEnd('\') }) -join ';' }
 }
 
-function Install-DshCommandShim([string]$RealDsh, [string]$Node, [string]$Wrapper) {
+function Install-DshCommandShim([string]$RealDsh, [string]$Node, [string]$Wrapper, [string]$BindModeValue, [string]$InstallDirValue) {
   New-Item -ItemType Directory -Force -Path $shimDir | Out-Null
   if ((Test-Path -LiteralPath $shimPath) -and -not (Get-Content -LiteralPath $shimPath -Raw).Contains($shimMarker)) {
     throw "Refusing to overwrite an unrelated command shim: $shimPath"
@@ -41,6 +45,8 @@ function Install-DshCommandShim([string]$RealDsh, [string]$Node, [string]$Wrappe
     'REM DSH_FIXED_WEB_SHIM_V1',
     'setlocal DisableDelayedExpansion',
     'set "REAL_DSH=__REAL_DSH__"',
+    'set "DSH_BIND_MODE=__BIND_MODE__"',
+    'set "DSH_INSTALL_DIR=__DSH_INSTALL_DIR__"',
     'if /I "%~1"=="web" goto :web',
     'call "%REAL_DSH%" %*',
     'exit /b',
@@ -50,7 +56,7 @@ function Install-DshCommandShim([string]$RealDsh, [string]$Node, [string]$Wrappe
     'if /I "%~2"=="--no-open" if "%~3"=="" goto :web_no_open',
     'if /I "%~2"=="--help" if "%~3"=="" goto :web_help',
     'if /I "%~2"=="-h" if "%~3"=="" goto :web_help',
-    'echo This launcher always uses port 3080 on all network interfaces without a browser login.',
+    'echo This launcher always uses port 3080 without a browser login.',
     'echo Usage: dsh web [--no-open]',
     'exit /b 2',
     '',
@@ -67,7 +73,7 @@ function Install-DshCommandShim([string]$RealDsh, [string]$Node, [string]$Wrappe
     'echo Opens the fixed DSH browser endpoint on port 3080. The internal DSH token is handled by the local bridge.',
     'exit /b 0'
   ) -join "`r`n"
-  $content = $content.Replace('__REAL_DSH__', $RealDsh).Replace('__NODE_EXE__', $Node).Replace('__WRAPPER_MJS__', $Wrapper)
+  $content = $content.Replace('__REAL_DSH__', $RealDsh).Replace('__NODE_EXE__', $Node).Replace('__WRAPPER_MJS__', $Wrapper).Replace('__BIND_MODE__', $BindModeValue).Replace('__DSH_INSTALL_DIR__', $InstallDirValue)
   [IO.File]::WriteAllText($shimPath, $content, (New-Object Text.ASCIIEncoding))
   Set-UserDshPath $true
 }
@@ -163,14 +169,36 @@ if ($Action -eq 'Remove') {
 $profileRoot = [IO.Path]::GetFullPath($env:USERPROFILE)
 $dshHome = if ($env:DSH_HOME) { [IO.Path]::GetFullPath($env:DSH_HOME) } else { Join-Path $profileRoot '.dsh' }
 $localAppData = Join-Path $profileRoot 'AppData\Local'
-$installDir = Join-Path $localAppData 'Programs\DeepSeek Harness'
+
+$dshCandidates = @()
+if ($DshInstallDir) { $dshCandidates += $DshInstallDir }
+if ($env:DSH_INSTALL_DIR) { $dshCandidates += $env:DSH_INSTALL_DIR }
+$dshCandidates += (Join-Path $localAppData 'Programs\DeepSeek Harness')
+if ($env:ProgramFiles) { $dshCandidates += (Join-Path $env:ProgramFiles 'DeepSeek Harness') }
+if (${env:ProgramFiles(x86)}) { $dshCandidates += (Join-Path ${env:ProgramFiles(x86)} 'DeepSeek Harness') }
+$installDir = $null
+foreach ($cand in $dshCandidates) {
+  if ($cand -and (Test-Path -LiteralPath (Join-Path $cand 'DeepSeek Harness.exe'))) { $installDir = [IO.Path]::GetFullPath($cand); break }
+}
+if (-not $installDir) { throw "DeepSeek Harness was not found in standard install locations. Install DeepSeek Harness or pass -DshInstallDir." }
 $realDsh = Join-Path $installDir 'resources\runtime\cli\bin\dsh.cmd'
-$nodePath = (Get-Command node -ErrorAction Stop).Source
-$tailscalePath = (Get-Command tailscale -ErrorAction Stop).Source
-if (-not (Test-Path -LiteralPath (Join-Path $installDir 'DeepSeek Harness.exe'))) { throw "DeepSeek Harness was not found in $installDir" }
 if (-not (Test-Path -LiteralPath $realDsh)) { throw "The DSH command was not found: $realDsh" }
-if (-not (Test-Path -LiteralPath $nodePath)) { throw "Node.js was not found: $nodePath" }
-if (-not (Test-Path -LiteralPath $tailscalePath)) { throw "Tailscale CLI was not found: $tailscalePath" }
+
+$nodeCandidates = @()
+if ($NodePath) { $nodeCandidates += $NodePath }
+$nodeCmd = Get-Command node -ErrorAction SilentlyContinue
+if ($nodeCmd -and $nodeCmd.Source) { $nodeCandidates += $nodeCmd.Source }
+if ($env:ProgramFiles) { $nodeCandidates += (Join-Path $env:ProgramFiles 'nodejs\node.exe') }
+$nodeCandidates += (Join-Path $localAppData 'Programs\nodejs\node.exe')
+$resolvedNodePath = $null
+foreach ($cand in $nodeCandidates) {
+  if ($cand -and (Test-Path -LiteralPath $cand)) { $resolvedNodePath = [IO.Path]::GetFullPath($cand); break }
+}
+if (-not $resolvedNodePath) { throw 'Node.js was not found in PATH or standard install locations. Install Node.js (LTS) or pass -NodePath.' }
+$nodePath = $resolvedNodePath
+
+$tailscaleCmd = Get-Command tailscale -ErrorAction SilentlyContinue
+$tailscalePath = if ($tailscaleCmd -and $tailscaleCmd.Source -and (Test-Path -LiteralPath $tailscaleCmd.Source)) { $tailscaleCmd.Source } else { '' }
 
 $oldSupervisor = Get-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath -ErrorAction SilentlyContinue
 $oldLauncherPath = if ($oldSupervisor) { Get-TaskLauncherPath $oldSupervisor }
@@ -210,6 +238,21 @@ if ($isCrossDirMigration) {
   $keepRunning = $sameSupPid -and $sameManagedPid -and ((Get-CurrentProcessAncestry) -contains $sameManagedPid)
 }
 
+$configPath = Join-Path $StateDir 'config.json'
+$persistedBindMode = ''
+if (Test-Path -LiteralPath $configPath) {
+  try {
+    $cfg = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    if ($cfg.bindMode -eq 'loopback' -or $cfg.bindMode -eq 'lan-tailscale') { $persistedBindMode = [string]$cfg.bindMode }
+  } catch {}
+}
+$oldHadBindMode = $oldSupervisor -and $oldSupervisor.Actions -and ($oldSupervisor.Actions[0].Arguments -match '(?i)(?:^|\s)-BindMode\b')
+$effectiveBindMode = if ($BindMode) { $BindMode } elseif ($persistedBindMode) { $persistedBindMode } elseif ($oldSupervisor -and -not $oldHadBindMode) { 'lan-tailscale' } else { 'loopback' }
+New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+$cfgTmp = "$configPath.$PID.tmp"
+([ordered]@{ version = 1; bindMode = $effectiveBindMode } | ConvertTo-Json -Compress) + "`n" | Set-Content -LiteralPath $cfgTmp -Encoding UTF8
+Move-Item -LiteralPath $cfgTmp -Destination $configPath -Force
+
 New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 if ($oldSupervisor) {
   $backup = Join-Path $backupDir 'DSH-Browser-Supervisor-task-before-boot.xml'
@@ -217,7 +260,7 @@ if ($oldSupervisor) {
     Export-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath | Set-Content -LiteralPath $backup -Encoding Unicode
   }
 }
-Install-DshCommandShim $realDsh $nodePath (Join-Path $projectRoot 'dsh-navegador.mjs')
+Install-DshCommandShim $realDsh $nodePath (Join-Path $projectRoot 'dsh-navegador.mjs') $effectiveBindMode $installDir
 & $controlInstaller -InstallDir $PSScriptRoot -StateDir $StateDir | Out-Null
 
 $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -235,8 +278,11 @@ $settings = New-ScheduledTaskSettingsSet `
 $quote = { param([string]$value) '"' + $value.Replace('"', '""') + '"' }
 $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + (& $quote $launcher) +
   ' -Port ' + [string]$Port + ' -StateDir ' + (& $quote $StateDir) +
+  ' -BindMode ' + $effectiveBindMode +
   ' -DshUserProfile ' + (& $quote $profileRoot) + ' -DshHome ' + (& $quote $dshHome) +
-  ' -NodePath ' + (& $quote $nodePath) + ' -TailscalePath ' + (& $quote $tailscalePath)
+  ' -DshInstallDir ' + (& $quote $installDir) +
+  ' -NodePath ' + (& $quote $nodePath)
+if ($tailscalePath) { $arguments += ' -TailscalePath ' + (& $quote $tailscalePath) }
 $scheduledAction = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $PSScriptRoot
 
 $legacyVbs = Join-Path $projectRoot 'iniciar-harness.vbs'
@@ -251,9 +297,14 @@ try {
     Stop-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 500
   }
+  $taskDesc = if ($effectiveBindMode -eq 'lan-tailscale') {
+    'Starts DSH when the user signs in, binds its browser bridge to LAN and Tailscale interfaces on port 3080, and restarts it after failures.'
+  } else {
+    'Starts DSH when the user signs in, binds its browser bridge to 127.0.0.1 on port 3080, and restarts it after failures.'
+  }
   Register-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath `
     -Action $scheduledAction -Trigger $trigger -Settings $settings -Principal $principal `
-    -Description 'Starts DSH when the user signs in, binds its browser bridge to all interfaces on port 3080, and restarts it after failures.' `
+    -Description $taskDesc `
     -Force | Out-Null
   Remove-Item (Join-Path $stateRunDir 'pause.sentinel'),(Join-Path $stateRunDir 'stop.sentinel') -Force -ErrorAction SilentlyContinue
   if (-not $keepRunning) { Start-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath }
@@ -266,5 +317,6 @@ Start-Sleep -Seconds 3
 $task = Get-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath
 $state = (Get-ScheduledTaskInfo -TaskName $supervisorTaskName -TaskPath $taskPath).LastTaskResult
 Write-Output "Installed the DSH interactive logon task for $userId (task state: $($task.State); last result: $state)."
-Write-Output 'It starts in the signed-in Windows session, uses the owner DSH profile, and exposes the no-login bridge on port 3080 across LAN and Tailscale interfaces.'
+$bindSummary = if ($effectiveBindMode -eq 'lan-tailscale') { 'across LAN and Tailscale interfaces' } else { 'on 127.0.0.1 (loopback only)' }
+Write-Output "It starts in the signed-in Windows session, uses the owner DSH profile, and exposes the no-login bridge on port 3080 $bindSummary."
 Write-Output "The dsh web command now opens the fixed bridge; shim: $shimPath"

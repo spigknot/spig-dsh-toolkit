@@ -57,7 +57,7 @@ test('runtime sync stages only allowlisted files and repairs a missing staged fi
   const first = sync();
   assert.equal(first.synced, true);
   const manifest = JSON.parse(readFileSync(first.manifestPath, 'utf8'));
-  assert.equal(manifest.version, 1);
+  assert.equal(manifest.version, 2);
   assert.equal(manifest.sourceSha256, first.sourceSha256);
   assert.match(manifest.sourceSha256, /^[a-f0-9]{64}$/);
   assert.match(manifest.launcherSha256, /^[a-f0-9]{64}$/);
@@ -330,4 +330,65 @@ test('production code contains no hardcoded local user/project paths or LEGACY_A
     if (existsSync(full)) scan(full);
   }
   assert.deepEqual(hits, []);
+});
+
+test('LocalWeb enforces loopback-only vs LAN+Tailscale peer policies', async () => {
+  const { LocalWeb } = await import('../components/general-configs/autostart/local-web-proxy.mjs');
+  const loopback = new LocalWeb('127.0.0.1', ['127.0.0.1', 'localhost']);
+  assert.equal(loopback.allowedPeer('127.0.0.1'), true);
+  assert.equal(loopback.allowedPeer('192.168.1.50'), false);
+
+  const lan = new LocalWeb('0.0.0.0', ['127.0.0.1', 'localhost']);
+  lan.setTailnetPeers(['100.64.0.42']);
+  assert.equal(lan.allowedPeer('127.0.0.1'), true);
+  assert.equal(lan.allowedPeer('100.64.0.42'), true);
+  assert.equal(lan.allowedPeer('8.8.8.8'), false);
+});
+
+test('mount sync preserves pre-0b LAN+Tailscale upgrade without exposing fresh PC installs', winOnly, t => {
+  // 1) Pre-0b runtime (manifest v1, no config.json) -> writes lan-tailscale and upgrades to v2
+  const pre0b = bundledFixture(t);
+  startup.syncAutostartRuntime({ sourceRoot: pre0b.bundle, runtimeDir: pre0b.runtimeDir });
+  const m1Path = join(pre0b.runtimeDir, 'manifest.json');
+  const m1 = JSON.parse(readFileSync(m1Path, 'utf8'));
+  m1.version = 1;
+  writeFileSync(m1Path, JSON.stringify(m1, null, 2) + '\n');
+  const ctl1 = startup.createStartupController({ bundleRoot: pre0b.bundle, stateDir: pre0b.stateDir });
+  assert.equal(ctl1.syncRuntimeIfInstalled().synced, true);
+  assert.equal(JSON.parse(readFileSync(join(pre0b.stateDir, 'config.json'), 'utf8')).bindMode, 'lan-tailscale');
+  assert.equal(JSON.parse(readFileSync(m1Path, 'utf8')).version, 2);
+
+  // 2) New PC runtime (manifest v2, no config.json) -> does NOT create lan-tailscale config
+  const fresh = bundledFixture(t);
+  startup.syncAutostartRuntime({ sourceRoot: fresh.bundle, runtimeDir: fresh.runtimeDir });
+  const ctl2 = startup.createStartupController({ bundleRoot: fresh.bundle, stateDir: fresh.stateDir });
+  ctl2.syncRuntimeIfInstalled();
+  assert.equal(existsSync(join(fresh.stateDir, 'config.json')), false);
+
+  // 3) Existing config.json with loopback -> preserved intact
+  const preserved = bundledFixture(t);
+  startup.syncAutostartRuntime({ sourceRoot: preserved.bundle, runtimeDir: preserved.runtimeDir });
+  writeFileSync(join(preserved.stateDir, 'config.json'), JSON.stringify({ version: 1, bindMode: 'loopback' }) + '\n');
+  const m3Path = join(preserved.runtimeDir, 'manifest.json');
+  const m3 = JSON.parse(readFileSync(m3Path, 'utf8'));
+  m3.version = 1;
+  writeFileSync(m3Path, JSON.stringify(m3, null, 2) + '\n');
+  const ctl3 = startup.createStartupController({ bundleRoot: preserved.bundle, stateDir: preserved.stateDir });
+  ctl3.syncRuntimeIfInstalled();
+  assert.equal(JSON.parse(readFileSync(join(preserved.stateDir, 'config.json'), 'utf8')).bindMode, 'loopback');
+});
+
+test('autostart portability contracts: optional tailscale, portable discovery, and BindMode', () => {
+  const installer = readFileSync(join(scriptsDir, 'install-supervisor.ps1'), 'ascii');
+  assert.doesNotMatch(installer, /Get-Command\s+tailscale\s+-ErrorAction\s+Stop/i);
+  assert.match(installer, /Programs\\DeepSeek Harness/);
+  assert.match(installer, /ProgramFiles/);  
+  assert.match(installer, /config\.json/);
+  assert.match(installer, /'loopback'/);
+
+  const wrapper = readFileSync(join(bundleRoot, 'dsh-navegador.mjs'), 'utf8');
+  assert.match(wrapper, /DSH_BIND_MODE/);
+  assert.match(wrapper, /config\.json/);
+  assert.match(wrapper, /bindMode === 'lan-tailscale' \? '0\.0\.0\.0' : '127\.0\.0\.1'/);
+  assert.match(wrapper, /if \(bindMode === 'lan-tailscale'\)/);
 });

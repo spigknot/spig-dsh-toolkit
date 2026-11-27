@@ -42,8 +42,11 @@ param(
   [string]$LogDir = '',
   [string]$ChildCmd = '',
   [string]$ChildArgs = '',
+  [ValidateSet('', 'loopback', 'lan-tailscale')]
+  [string]$BindMode = '',
   [string]$DshUserProfile = '',
   [string]$DshHome = '',
+  [string]$DshInstallDir = '',
   [string]$NodePath = '',
   [string]$TailscalePath = '',
   [switch]$Stop,
@@ -59,6 +62,8 @@ $script:DshUserProfile = [IO.Path]::GetFullPath($DshUserProfile)
 $script:DshLocalAppData = Join-Path $script:DshUserProfile 'AppData\Local'
 if (-not $DshHome) { $DshHome = Join-Path $script:DshUserProfile '.dsh' }
 $script:DshHome = [IO.Path]::GetFullPath($DshHome)
+$script:BindMode = $BindMode
+$script:DshInstallDir = $DshInstallDir
 $script:NodePath = $NodePath
 $script:TailscalePath = $TailscalePath
 $script:WrapperPath = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\dsh-navegador.mjs'))
@@ -270,6 +275,8 @@ function Start-SupervisorProcess {
     '-LogDir',('"' + $LogDir + '"'),
     '-DshUserProfile',('"' + $script:DshUserProfile + '"'),
     '-DshHome',('"' + $script:DshHome + '"'))
+  if ($script:BindMode) { $args += @('-BindMode', $script:BindMode) }
+  if ($script:DshInstallDir) { $args += @('-DshInstallDir', ('"' + $script:DshInstallDir + '"')) }
   if ($script:NodePath) { $args += @('-NodePath', ('"' + $script:NodePath + '"')) }
   if ($script:TailscalePath) { $args += @('-TailscalePath', ('"' + $script:TailscalePath + '"')) }
   if ($BindHost) { $args += @('-BindHost',('"' + $BindHost + '"')) }
@@ -369,6 +376,13 @@ function Start-DataNode {
   $env:APPDATA = Join-Path $script:DshUserProfile 'AppData\Roaming'
   $env:DSH_HOME = $script:DshHome
   $env:DSH_AUTOSTART_STATE_DIR = $script:StateDir
+  $effectiveBindMode = $script:BindMode
+  if (-not $effectiveBindMode) {
+    $cfg = Read-JsonFile (Join-Path $script:StateDir 'config.json')
+    if ($cfg -and ($cfg.bindMode -eq 'loopback' -or $cfg.bindMode -eq 'lan-tailscale')) { $effectiveBindMode = [string]$cfg.bindMode }
+  }
+  if ($effectiveBindMode) { $env:DSH_BIND_MODE = $effectiveBindMode }
+  if ($script:DshInstallDir) { $env:DSH_INSTALL_DIR = $script:DshInstallDir }
   if ($script:TailscalePath) { $env:DSH_TAILSCALE_PATH = $script:TailscalePath }
   # Ensure the harness home resolves to the chosen profile regardless of how the guard was
   # launched, so the credentials document is always found. DSH_HOME unset uses

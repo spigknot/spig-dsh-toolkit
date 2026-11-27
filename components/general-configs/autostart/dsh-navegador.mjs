@@ -1,4 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { LocalWeb } from './local-web-proxy.mjs';
@@ -23,9 +24,24 @@ if (response?.ok && response.headers.get('x-dsh-local') === '1') {
   process.exit(0);
 }
 
+function resolveBindMode() {
+  const envMode = String(process.env.DSH_BIND_MODE || '').trim().toLowerCase();
+  if (envMode === 'loopback' || envMode === 'lan-tailscale') return envMode;
+  const stateDir = process.env.DSH_AUTOSTART_STATE_DIR?.trim()
+    || fileURLToPath(new URL('..', import.meta.url));
+  try {
+    const cfg = JSON.parse(readFileSync(join(stateDir, 'config.json'), 'utf8'));
+    if (cfg?.bindMode === 'loopback' || cfg?.bindMode === 'lan-tailscale') return cfg.bindMode;
+  } catch {}
+  if (process.env.DSH_BIND_HOST === '0.0.0.0') return 'lan-tailscale';
+  // Fallback legado se nem env nem config.json existirem (execucao manual fora do staged).
+  return 'lan-tailscale';
+}
+const bindMode = resolveBindMode();
+const bindAddress = bindMode === 'lan-tailscale' ? '0.0.0.0' : '127.0.0.1';
 const computerName = String(process.env.COMPUTERNAME || '').trim().toLowerCase();
 const localHostNames = ['127.0.0.1', 'localhost', ...(computerName ? [computerName, `${computerName}.local`] : [])];
-const proxy = new LocalWeb('0.0.0.0', localHostNames);
+const proxy = new LocalWeb(bindAddress, localHostNames);
 let tailnetTimer;
 const child = spawn(join(install, 'DeepSeek Harness.exe'), [
   '--expose-internals', cli, 'web', '--patch', pickerPatch,
@@ -61,8 +77,10 @@ for (const stream of [child.stdout, child.stderr]) {
         proxy.setTailnetPeers([...selfIps, ...peers]);
         proxy.setHostNames([...localHostNames, ...selfIps, ...(dns ? [dns, dns.split('.')[0]] : [])]);
       }
-      void refreshTailnet();
-      tailnetTimer = setInterval(refreshTailnet, 15000);
+      if (bindMode === 'lan-tailscale') {
+        void refreshTailnet();
+        tailnetTimer = setInterval(refreshTailnet, 15000);
+      }
       if (!process.argv.includes('--no-open')) openBrowser();
     }).catch(() => fail('O servidor local não pôde ser iniciado.'));
   });
