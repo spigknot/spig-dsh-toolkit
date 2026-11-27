@@ -253,3 +253,50 @@ test('installer refuses a cross-directory handoff on an occupied port with exit 
   assert.equal(result.status, 7, result.stderr);
   assert.match(result.stderr, /Aborting install to prevent split-brain/u);
 });
+
+test('control shortcut installer overwrites legacy arguments and sets StateDir', winOnly, t => {
+  const root = temp(t);
+  const installDir = join(root, 'staged', 'dsh-autostart');
+  const programsDir = join(root, 'programs');
+  const stateDir = join(root, 'state');
+  mkdirSync(installDir, { recursive: true });
+  mkdirSync(programsDir, { recursive: true });
+  copyFileSync(join(scriptsDir, 'install-control-shortcut.ps1'), join(installDir, 'install-control-shortcut.ps1'));
+  copyFileSync(join(scriptsDir, 'dsh-control.ps1'), join(installDir, 'dsh-control.ps1'));
+
+  const shortcutPath = join(programsDir, 'DSH Control.lnk');
+  const q = value => "'" + value.replaceAll("'", "''") + "'";
+  const seedScript = join(root, 'seed-legacy-lnk.ps1');
+  writeFileSync(seedScript, [
+    `$shell = New-Object -ComObject WScript.Shell`,
+    `$lnk = $shell.CreateShortcut(${q(shortcutPath)})`,
+    `$lnk.TargetPath = (Join-Path $PSHOME 'powershell.exe')`,
+    `$lnk.Arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "C:\\legacy\\dsh-control.ps1"'`,
+    `$lnk.WorkingDirectory = 'C:\\legacy'`,
+    `$lnk.Save()`,
+  ].join('\r\n'));
+  const seeded = powershell(seedScript, []);
+  assert.equal(seeded.status, 0, seeded.stderr);
+
+  const installed = powershell(join(installDir, 'install-control-shortcut.ps1'), [
+    '-InstallDir', installDir,
+    '-ProgramsDir', programsDir,
+    '-StateDir', stateDir,
+  ]);
+  assert.equal(installed.status, 0, installed.stderr);
+
+  const inspectScript = join(root, 'inspect-lnk.ps1');
+  writeFileSync(inspectScript, [
+    `$shell = New-Object -ComObject WScript.Shell`,
+    `$lnk = $shell.CreateShortcut(${q(shortcutPath)})`,
+    `[ordered]@{ TargetPath = $lnk.TargetPath; Arguments = $lnk.Arguments; WorkingDirectory = $lnk.WorkingDirectory } | ConvertTo-Json -Compress`,
+  ].join('\r\n'));
+  const inspected = powershell(inspectScript, []);
+  assert.equal(inspected.status, 0, inspected.stderr);
+  const info = JSON.parse(inspected.stdout.trim());
+  assert.match(info.TargetPath, /powershell\.exe$/i);
+  assert.equal(info.WorkingDirectory, installDir);
+  assert.equal(info.Arguments.includes(join(installDir, 'dsh-control.ps1')), true, info.Arguments);
+  assert.equal(info.Arguments.includes(`-StateDir "${stateDir}"`), true, info.Arguments);
+  assert.equal(info.Arguments.includes('legacy'), false, info.Arguments);
+});
