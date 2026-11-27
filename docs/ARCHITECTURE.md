@@ -36,15 +36,15 @@ spig-dsh-toolkit/
 │                                  # `session-query-sqlite` (FTS5, openAt: first-search,
 │                                  # path via `dshHomePath('session-search.db')`)
 │
-│ Nota sobre o supervisor/restart: `querySupervisor`/`requestRestart` adotam
-│ o diretório de estado que estiver rastreando a instância viva (embutido ou
-│ o legado `D:\Projetos\DeepSeekHarness\dsh-autostart`). Instalações novas
-│ usam sempre a cópia embutida; a pasta legada nunca é dependência.
-│ O restart real é suicídio gracioso do próprio host quando ele prova viver
-│ sob o wrapper rastreado — o wrapper encerra o proxy e o supervisor reboota
-│ a árvore (~15s). Um `-Restart` disparado de DENTRO da árvore-alvo é reaped
-│ pelo próprio `taskkill /T` antes de concluir (no-op silencioso); por isso
-│ ele só é usado contra instância externa.
+│ Nota sobre o supervisor/restart (arquitetura staged): o bundle em
+│ `components/general-configs/autostart/` é imutável e sincronizado por SHA-256
+│ no mount/install para `$DSH_HOME/plugins/spig-dsh-toolkit/autostart/{runtime,run,logs,backup}`.
+│ `querySupervisor`/`requestRestart` operam exclusivamente sobre esse diretório
+│ staged. O restart real é suicídio gracioso do próprio host quando ele prova
+│ viver sob o wrapper rastreado — o wrapper encerra o proxy e o supervisor
+│ reboota a árvore (~15s). Um `-Restart` disparado de DENTRO da árvore-alvo é
+│ reaped pelo próprio `taskkill /T` antes de concluir (no-op silencioso); por
+│ isso ele só é usado contra instância externa.
 ├── scripts/
 │   └── build.mjs                   # Gera `lib/client.js` combinando toolkit + clients dos componentes
 └── test/

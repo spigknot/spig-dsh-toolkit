@@ -387,7 +387,7 @@ test("quota waits fail fast by default: disclosed resets past 2 min end the turn
 test("querySupervisor never throws with an isolated empty state directory", async () => {
   const dir = makeTempDir();
   try {
-    const ctl = createStartupController({ stateDir: dir, includeLegacy: false, includeBundledFallback: false });
+    const ctl = createStartupController({ stateDir: dir });
     const status = await ctl.querySupervisor();
     assert.equal(status.supported, process.platform === "win32");
     assert.equal(typeof status.managed, "boolean");

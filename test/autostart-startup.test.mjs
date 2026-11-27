@@ -83,7 +83,7 @@ test('runtime sync stages only allowlisted files and repairs a missing staged fi
 test('mount sync skips a clean state and repairs a staged runtime without touching state', winOnly, t => {
   const { bundle, stateDir, runtimeDir } = bundledFixture(t);
   const warnings = [];
-  const ctl = startup.createStartupController({ bundleRoot: bundle, stateDir, onWarn: msg => warnings.push(msg), includeLegacy: false });
+  const ctl = startup.createStartupController({ bundleRoot: bundle, stateDir, onWarn: msg => warnings.push(msg) });
   assert.deepEqual(ctl.syncRuntimeIfInstalled(), { skipped: true, reason: 'not-installed' });
   assert.equal(existsSync(stateDir), false);
   startup.syncAutostartRuntime({ sourceRoot: bundle, runtimeDir });
@@ -99,7 +99,7 @@ test('mount sync skips a clean state and repairs a staged runtime without touchi
 
 test('status exposes bundle availability before staging and reads selected staged records', async t => {
   const { bundle, stateDir } = bundledFixture(t);
-  const ctl = startup.createStartupController({ bundleRoot: bundle, stateDir, includeLegacy: false, includeBundledFallback: false, taskName: 'DSH-Test-Not-Installed', healthUrl: 'http://127.0.0.1:0/' });
+  const ctl = startup.createStartupController({ bundleRoot: bundle, stateDir, taskName: 'DSH-Test-Not-Installed', healthUrl: 'http://127.0.0.1:0/' });
   const empty = await ctl.getStatus();
   assert.equal(empty.available, process.platform === 'win32');
   assert.equal(empty.supervisor, null);
@@ -299,4 +299,35 @@ test('control shortcut installer overwrites legacy arguments and sets StateDir',
   assert.equal(info.Arguments.includes(join(installDir, 'dsh-control.ps1')), true, info.Arguments);
   assert.equal(info.Arguments.includes(`-StateDir "${stateDir}"`), true, info.Arguments);
   assert.equal(info.Arguments.includes('legacy'), false, info.Arguments);
+});
+
+test('production code contains no hardcoded local user/project paths or LEGACY_AUTOSTART_DIR', () => {
+  const repoRoot = fileURLToPath(new URL('../', import.meta.url));
+  const forbidden = [
+    /[A-Za-z]:[\\/](Projetos|Users)[\\/]/i,
+    /LEGACY_AUTOSTART_DIR/,
+  ];
+  const textExts = new Set(['.js', '.mjs', '.cjs', '.ts', '.json', '.yml', '.yaml', '.ps1', '.cmd', '.md', '.txt']);
+  const hits = [];
+  function scan(dir) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name === 'node_modules') continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        scan(full);
+        continue;
+      }
+      const ext = entry.name.includes('.') ? entry.name.slice(entry.name.lastIndexOf('.')).toLowerCase() : '';
+      if (!textExts.has(ext)) continue;
+      const content = readFileSync(full, 'utf8');
+      for (const pattern of forbidden) {
+        if (pattern.test(content)) hits.push(`${full}: ${pattern}`);
+      }
+    }
+  }
+  for (const top of ['src', 'lib', 'components']) {
+    const full = join(repoRoot, top);
+    if (existsSync(full)) scan(full);
+  }
+  assert.deepEqual(hits, []);
 });

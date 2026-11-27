@@ -130,12 +130,6 @@ export function syncAutostartRuntime({ sourceRoot = DEFAULT_BUNDLE_AUTOSTART_ROO
   atomicWrite(manifestPath, JSON.stringify({ version: 1, packageVersion, sourceSha256, launcherSha256, syncedAt, launcherSyncedAt, files: AUTOSTART_RUNTIME_FILES }, null, 2) + "\n");
   return { synced: true, ...result, previousSha256: previous?.sourceSha256 ?? null };
 }
-// Previous standalone location of these same scripts. Never a dependency:
-// the bundled copy above is authoritative for installs. It is only *read*
-// when it still holds the live supervisor state (run/*.json) of the running
-// 3080 instance, so restart/status keep working until a reinstall migrates
-// the task to the bundled copy.
-export const LEGACY_AUTOSTART_DIR = "D:\\Projetos\\DeepSeekHarness\\dsh-autostart";
 export const DEFAULT_TASK_NAME = "DSH Browser Supervisor";
 export const DEFAULT_HEALTH_URL = "http://127.0.0.1:3080/__dsh_health";
 
@@ -190,25 +184,7 @@ export function createStartupController(options = {}) {
   const healthUrl = options.healthUrl || DEFAULT_HEALTH_URL;
 
   function candidateDescriptors() {
-    const legacyDir = options.legacyDir ?? LEGACY_AUTOSTART_DIR;
-    const candidates = [
-      { id: "staged", scriptPath: join(runtimeAutostartDir, LAUNCHER), stateDir, passStateDir: true },
-      ...(options.includeBundledFallback === false ? [] : [{ id: "bundled", scriptPath: join(bundleAutostartDir, LAUNCHER), stateDir: bundleAutostartDir, passStateDir: false }]),
-      ...(options.includeLegacy === false ? [] : [{ id: "legacy", scriptPath: join(legacyDir, LAUNCHER), stateDir: legacyDir, passStateDir: false }]),
-    ];
-    const seen = new Set();
-    return candidates.filter(desc => {
-      const key = JSON.stringify([desc.scriptPath, desc.stateDir]);
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-  }
-
-  function resolveActiveStateDir() {
-    return candidateDescriptors().find(desc => ["dsh-web.json", "supervisor.json"].some(file =>
-      existsSync(join(desc.stateDir, "run", file)),
-    ))?.stateDir ?? stateDir;
+    return [{ id: "staged", scriptPath: join(runtimeAutostartDir, LAUNCHER), stateDir, passStateDir: true }];
   }
 
   function syncRuntimeIfInstalled() {
@@ -227,15 +203,15 @@ export function createStartupController(options = {}) {
       queryScheduledTask(taskName),
       checkHealth(healthUrl),
     ]);
-    const activeStateDir = resolveActiveStateDir();
-    const runDir = join(activeStateDir, "run");
+    const activeStateDir = stateDir;
+    const runDir = join(stateDir, "run");
     const supervisorMeta = readJsonSafe(join(runDir, "supervisor.json"));
     const webMeta = readJsonSafe(join(runDir, "dsh-web.json"));
     const paused = existsSync(join(runDir, "pause.sentinel")) || existsSync(join(runDir, "stop.sentinel"));
     const manifest = readJsonSafe(manifestPath);
     const syncedAt = Date.parse(manifest?.launcherSyncedAt);
     const startedAt = Date.parse(supervisorMeta?.startTimeUtc);
-    const supervisorOutdated = activeStateDir === stateDir && Number.isFinite(syncedAt) && Number.isFinite(startedAt) && syncedAt > startedAt;
+    const supervisorOutdated = Number.isFinite(syncedAt) && Number.isFinite(startedAt) && syncedAt > startedAt;
 
     return {
       supported: process.platform === "win32",
@@ -287,10 +263,8 @@ export function createStartupController(options = {}) {
   const descriptorFields = desc => ({ dir: desc.stateDir, stateDir: desc.stateDir, scriptPath: desc.scriptPath, passStateDir: desc.passStateDir, source: desc.id });
 
   /**
-   * Ask the supervisor whether THIS web host is a managed instance.
-   * Fast and side-effect free (`-Status` returns one JSON line). Checks every
-   * candidate state dir (bundled first, then the legacy location) and adopts
-   * whichever one currently tracks the live 3080 instance.
+   * Ask the staged supervisor whether THIS web host is a managed instance.
+   * Fast and side-effect free (`-Status` returns one JSON line).
    */
   async function querySupervisor() {
     if (process.platform !== "win32") {
