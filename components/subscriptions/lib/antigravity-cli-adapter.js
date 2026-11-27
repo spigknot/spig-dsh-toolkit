@@ -35,15 +35,37 @@ export async function* streamCliResult(run, options, error = (message, code) => 
   yield* answerChunks({text: noteInvalidCalls(parsed.text, parsed.invalid), calls: parsed.calls, usage: result?.usage});
 }
 
-export function createCliAdapter({ list, run, stream, defaultEffortOf = () => undefined, error = (message) => new Error(message) }) {
+export function createCliAdapter({
+  list,
+  run,
+  stream,
+  defaultEffortOf = () => undefined,
+  error = (message) => new Error(message),
+  ttlMs = 300_000,
+  failureBackoffMs = 15_000,
+  listTimeoutMs = 60_000,
+  now = () => Date.now(),
+}) {
   let cache, expires = 0, pending;
   async function models() {
-    if (cache && Date.now() < expires) return cache;
-    pending ??= Promise.resolve().then(() => list({ signal: AbortSignal.timeout(60000) })).then(rows => {
-      cache = groupCliModels(rows);
-      expires = Date.now() + 60000;
-      return cache;
-    }).finally(() => { pending = undefined; });
+    if (cache && now() < expires) return cache;
+    pending ??= Promise.resolve()
+      .then(() => list({ signal: AbortSignal.timeout(listTimeoutMs) }))
+      .then(rows => {
+        cache = groupCliModels(rows);
+        expires = now() + ttlMs;
+        return cache;
+      })
+      .catch(cause => {
+        // Stale-if-error: keep the last known-good catalog on transient CLI/network
+        // failures and back off briefly so concurrent/subsequent calls do not stampede.
+        if (cache && cache.length > 0) {
+          expires = now() + failureBackoffMs;
+          return cache;
+        }
+        throw cause;
+      })
+      .finally(() => { pending = undefined; });
     return pending;
   }
   // Context capacity is mandatory: compaction and model switching size their
