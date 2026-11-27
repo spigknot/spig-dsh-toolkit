@@ -166,7 +166,7 @@ test('the DSH tool bridge preference defaults on, round-trips, and is Antigravit
 test('Antigravity Settings renders the transport selector and only exposes legacy switches in compaction mode', () => {
 	const client = readFileSync(new URL('client.js', root), 'utf8');
 	assert.match(client, /id === "antigravity" &&[^\n]*\(AntigravityTransportSetting,/u);
-	const source = client.slice(client.indexOf('function AgyFixSwitch('), client.indexOf('function CompactionModelSetting('));
+	const source = client.slice(client.indexOf('function AgyFixSwitch('), client.indexOf('function SubscriptionsSection('));
 	const jsx = (tag, props) => typeof tag === 'function' ? tag(props) : { tag, props };
 	const render = new Function('react_jsx_runtime', 'styles$5', 'react', `${source}\nreturn AntigravityTransportSetting;`)({ jsx, jsxs: jsx }, {}, { useId: () => 'agy-hint' });
 	const all = (node) => Array.isArray(node) ? node.flatMap(all) : node?.props ? [node, ...all(node.props.children)] : [];
@@ -274,33 +274,38 @@ test('toggles merge into the stored provider document instead of replacing it', 
 	}
 });
 
-test('the compaction-model choice is wired: routing at mount, recovery budget and RPC endpoints', () => {
-	assert.match(bundle, /import \{[^}]*CompactionModelStore[^}]*installCompactionRouting[^}]*summaryChunkBudget[^}]*\} from "\.\/compaction-model\.js";/u);
-	assert.match(bundle, /installCompactionRouting\(ctx, \{\s*store: compactionModel,/u);
-	assert.match(bundle, /chunkBudgetFor: \(_agent, signal\) => summaryChunkBudget\(\{ store: compactionModel, llm: ctx\.llm, signal \}\)/u);
-	for (const endpoint of ['compactionModel', 'setCompactionModel']) {
-		assert.match(bundle, new RegExp(`"${endpoint}",`, 'u'), `${endpoint} must be a registered endpoint`);
-		assert.match(bundle, new RegExp(`case "${endpoint}":`, 'u'), `${endpoint} must be dispatched`);
+test('compaction lives in General Configs, never in Subscriptions', () => {
+	// Host bundle: no store, no routing, no recovery budget, no RPC.
+	assert.doesNotMatch(bundle, /compaction-model\.js/u);
+	assert.doesNotMatch(bundle, /CompactionModelStore|installCompactionRouting|summaryChunkBudget|COMPACTION_EFFORTS/u);
+	assert.doesNotMatch(bundle, /async compactionModel\(\)|async setCompactionModel\(value\)/u);
+	for (const snippet of ['"compactionModel"', '"setCompactionModel"', 'case "compactionModel"', 'case "setCompactionModel"']) {
+		assert.ok(!bundle.includes(snippet), `Subscriptions bundle must not contain ${snippet}`);
 	}
+	// Client bundle: no picker, no card marker, no locale keys.
 	const client = readFileSync(new URL('client.js', root), 'utf8');
-	assert.match(client, /function CompactionModelSetting\(/u);
-	// The reasoning selector: "default" plus only the levels the chosen model accepts.
-	assert.match(client, /children: t\("compactionEffort"\)/u);
-	assert.match(client, /value: "default",\s*children: t\("compactionEffortDefault"\)/u);
-	assert.match(client, /efforts\.map\(\(id\) =>/u);
-	assert.match(client, /setEffort\(current\?\.effort \?\? "default"\)/u);
-	assert.match(client, /save\(\{\s*provider,\s*model,\s*scope,\s*effort\s*\}\)/u);
-	// The same effort list for every model, and a safe fallback when the model
-	// does not declare the chosen level (DSH would reject the call outright).
-	assert.match(bundle, /COMPACTION_EFFORTS, CompactionModelStore/u);
-	assert.match(bundle, /efforts: COMPACTION_EFFORTS,/u);
-	assert.match(readFileSync(new URL('compaction-model.js', root), 'utf8'), /does not declare reasoning effort/u);
-	// The save handler must not reject a level from the fixed list.
-	const handler = bundle.slice(bundle.indexOf('async setCompactionModel(value)'), bundle.indexOf('async setCompactionModel(value)') + 1_600);
-	assert.ok(handler.length > 0, 'setCompactionModel must exist');
-	assert.doesNotMatch(handler, /does not support reasoning effort|not support reasoning/u);
-	// Rendered right after the Proxy card.
-	assert.match(client, /proxyStatusText\(t, proxy, proxyLoadError\)\s*\}\)\]\s*\}\),\s*\/\* @__PURE__ \*\/ \(0, react_jsx_runtime\.jsx\)\(CompactionModelSetting,/u);
+	assert.doesNotMatch(client, /function CompactionModelSetting\(/u);
+	assert.doesNotMatch(client, /data-subscriptions-compaction-model/u);
+	assert.doesNotMatch(client, /compactionTitle|compactionStatus|compactionConfigure|compactionHint|compactionProvider|compactionModel|compactionEffort|compactionScope|compactionChoose|compactionSave|compactionLoading|compactionFailed|compactionDefault|compactionCancel|compactionSaving/u);
+	// Ownership: the General Configs host installs routing + agy recovery budget,
+	// persists under its own path (one-time legacy import), and owns the module.
+	const generalHost = readFileSync(new URL('../src/components/general-configs.js', import.meta.url), 'utf8');
+	assert.match(generalHost, /installCompactionRouting\(ctx, \{\s*store,/u);
+	assert.match(generalHost, /installAgyOverflowRecovery\(ctx,/u);
+	assert.match(generalHost, /summaryChunkBudget\(\{\s*store,/u);
+	assert.match(generalHost, /plugins", "spig-dsh-toolkit", "compaction-model\.json/u);
+	assert.match(generalHost, /plugins", "subscriptions", "compaction-model\.json/u, 'legacy one-time import');
+	const moduleRoot = new URL('../src/components/general-configs/', import.meta.url);
+	const moduleSource = readFileSync(new URL('compaction-model.js', moduleRoot), 'utf8');
+	assert.match(moduleSource, /export function installCompactionRouting/u);
+	assert.match(moduleSource, /does not declare reasoning effort/u);
+	// RPC + UI go through spig-general only.
+	const generalRpc = readFileSync(new URL('../src/components/general-configs/rpc.js', import.meta.url), 'utf8');
+	assert.match(generalRpc, /"compactionGet",/u);
+	assert.match(generalRpc, /"compactionSet",/u);
+	const generalClient = readFileSync(new URL('../src/client/general-configs-client.js', import.meta.url), 'utf8');
+	assert.match(generalClient, /spig-general\.compactionGet/u);
+	assert.doesNotMatch(generalClient, /subscriptions\.compactionModel|subscriptions\.setCompactionModel|subMethod/u);
 });
 
 test('standalone provider-settings.js does not drift from the bundled copy', () => {

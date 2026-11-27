@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 import { createCliAdapter } from '../components/subscriptions/lib/antigravity-cli-adapter.js';
 import { createAgy, MAX_AGY_PROMPT_BYTES } from '../components/subscriptions/lib/antigravity-cli-local.js';
 import { installAgyOverflowRecovery } from '../components/subscriptions/lib/antigravity-cli-recovery.js';
-import { CompactionModelStore, installCompactionRouting, summaryChunkBudget } from '../components/subscriptions/lib/compaction-model.js';
+import { CompactionModelStore, installCompactionRouting, summaryChunkBudget } from '../src/components/general-configs/compaction-model.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 

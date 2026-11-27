@@ -127,14 +127,12 @@ test('every TOOLKIT DIVERGENCE region inside index.js is explicitly covered by a
 	assert.deepEqual(unguarded, [], `Unguarded TOOLKIT DIVERGENCE regions in index.js: ${unguarded.join(', ')}`);
 });
 
-test('index.js imports external Antigravity, compaction, and lifecycle modules directly', () => {
+test('index.js imports external Antigravity and lifecycle modules directly', () => {
 	const head = bundle.slice(0, 1500);
 	for (const spec of [
 		'./antigravity-cli-adapter.js',
 		'./antigravity-acp-transport.js',
 		'./antigravity-cli-local.js',
-		'./antigravity-cli-recovery.js',
-		'./compaction-model.js',
 		'./lifecycle-journal.js',
 	]) {
 		assert.ok(head.includes(spec), `index.js must import ${spec} from its external single-source module`);

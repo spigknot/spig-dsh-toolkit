@@ -1,9 +1,11 @@
 import { dshHomePath } from "@deepseek-ai/dsh-home-paths";
+import { installAgyOverflowRecovery } from "../../components/subscriptions/lib/antigravity-cli-recovery.js";
 import {
   COMPACTION_EFFORTS,
   CompactionModelStore,
   installCompactionRouting,
-} from "../../components/subscriptions/lib/compaction-model.js";
+  summaryChunkBudget,
+} from "./general-configs/compaction-model.js";
 import { GeneralConfigsStore, defaultGeneralConfigsPath } from "./general-configs/store.js";
 import { registerGeneralRpc } from "./general-configs/rpc.js";
 
@@ -23,29 +25,35 @@ async function withTimeout(fn, ms) {
   }
 }
 
-function hasActiveSubscriptionsPlugin(ctx) {
-  const registry = ctx?.root?.registry;
-  if (!registry || typeof registry.entries !== "function") return false;
-  for (const [plugin, state] of registry.entries()) {
-    if (state?.disposed) continue;
-    const name = plugin?.name ?? state?.runtime?.name;
-    if (name === "spig-dsh-toolkit:subscriptions" || name === "spig-dsh-subscriptions") {
-      return true;
-    }
-  }
-  return false;
-}
+/** Legacy Subscriptions-owned store, imported once on first run. */
+const LEGACY_COMPACTION_PATH = () => dshHomePath("plugins", "subscriptions", "compaction-model.json");
 
 function createCompactionBridge(ctx, { onWarn }) {
-  const filePath = dshHomePath("plugins", "subscriptions", "compaction-model.json");
+  // Single source of truth, owned by General Configs (not Subscriptions).
+  const filePath = dshHomePath("plugins", "spig-dsh-toolkit", "compaction-model.json");
   const store = new CompactionModelStore(filePath);
-
-  // Install compaction routing only when subscriptions is not already handling it.
-  // When subscriptions is active, the UI routes writes through subscriptions' RPC
-  // so both share the exact same file and in-memory state.
-  if (!hasActiveSubscriptionsPlugin(ctx)) {
-    ctx.effect(() => installCompactionRouting(ctx, { store, onWarn }), "spig-dsh-toolkit:general-configs compaction routing");
+  // One-time import from the legacy file; afterwards the Toolkit path wins.
+  try {
+    if (store.get() === undefined) {
+      const legacy = new CompactionModelStore(LEGACY_COMPACTION_PATH()).get();
+      if (legacy !== undefined) {
+        store.set(legacy).catch((error) => onWarn(`compaction model migration failed: ${error instanceof Error ? error.message : String(error)}`));
+      }
+    }
+  } catch (error) {
+    onWarn(`compaction model migration failed: ${error instanceof Error ? error.message : String(error)}`);
   }
+
+  // The compaction-model choice lives here: re-route only summarization calls
+  // (`purpose: 'compaction'`) to the chosen route, on every provider route.
+  // General Configs is always mounted, so this is installed unconditionally.
+  ctx.effect(() => installCompactionRouting(ctx, { store, onWarn }), "spig-dsh-toolkit:general-configs compaction routing");
+  // Size the Antigravity CLI overflow recovery for the chosen summarizer, so a
+  // non-CLI compaction model still summarizes the whole history in few spans.
+  ctx.effect(() => installAgyOverflowRecovery(ctx, {
+    onWarn,
+    chunkBudgetFor: (_agent, signal) => summaryChunkBudget({ store, llm: ctx.get?.("llm") ?? ctx.llm, signal }),
+  }), "spig-dsh-toolkit:general-configs antigravity overflow recovery");
 
   async function getView() {
     const llm = ctx.get?.("llm") ?? ctx.llm;
@@ -63,7 +71,7 @@ function createCompactionBridge(ctx, { onWarn }) {
         });
       }
     }
-    // Reload latest file state in case subscriptions updated it.
+    // Reload latest file state (single owner; no other component writes it).
     const fresh = new CompactionModelStore(filePath);
     return {
       current: fresh.get() ?? null,

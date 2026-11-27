@@ -10,7 +10,7 @@ import { mountWithLifecycleJournal } from "../../components/subscriptions/lib/li
 export const subscriptionsComponent = {
   id: "subscriptions",
   title: "Subscriptions",
-  description: "Provedores por assinatura (Codex, Claude, Grok, Copilot e Google Antigravity via agy), pools de contas, proxy, compaction model e ferramentas de mídia/busca.",
+  description: "Provedores por assinatura (Codex, Claude, Grok, Copilot e Google Antigravity via agy), pools de contas, proxy e ferramentas de mídia/busca.",
   defaultEnabled: true,
   settingsSectionId: "subscriptions",
   legacyPluginNames: ["spig-dsh-subscriptions", "dsh-plugin-subscriptions"],

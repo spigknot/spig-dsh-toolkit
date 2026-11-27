@@ -32,7 +32,7 @@ const syntaxTargets = [
 	join(ROOT, 'components', 'subscriptions', 'lib', 'index.js'),
 	...collectJsFiles(
 		join(ROOT, 'components', 'subscriptions', 'lib'),
-		(name) => /^(?:antigravity-.*|compaction-model|lifecycle-journal)\.js$/u.test(name),
+		(name) => /^(?:antigravity-.*|lifecycle-journal)\.js$/u.test(name),
 	),
 	join(ROOT, 'components', 'subscriptions', 'lib', 'translate', 'anthropic.js'),
 	join(ROOT, 'components', 'subscriptions', 'lib', 'providers', 'rate-limit.js'),
@@ -53,8 +53,8 @@ const importTargets = [
 	'components/subscriptions/lib/antigravity-context-delivery.js',
 	'components/subscriptions/lib/antigravity-timeouts.js',
 	'components/subscriptions/lib/antigravity-tool-bridge.js',
-	'components/subscriptions/lib/compaction-model.js',
 	'components/subscriptions/lib/lifecycle-journal.js',
+	'src/components/general-configs/compaction-model.js',
 ];
 
 for (const rel of importTargets) {

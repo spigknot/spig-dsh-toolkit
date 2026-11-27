@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { CompactionModelStore, installCompactionRouting, summaryChunkBudget } from '../components/subscriptions/lib/compaction-model.js';
+import { CompactionModelStore, installCompactionRouting, summaryChunkBudget } from '../src/components/general-configs/compaction-model.js';
 
 async function tempStore(t) {
 	const dir = await mkdtemp(join(tmpdir(), 'dsh-compaction-model-'));

@@ -4,9 +4,9 @@ Plugin modular para o DeepSeek Harness (DSH) que centraliza os plugins `spig-dsh
 
 ## Componentes incluídos
 
-- **Subscriptions** (`subscriptions`): provedores por assinatura (Codex, Claude, Grok, Copilot e Google Antigravity via CLI `agy`), pools de contas, proxy HTTP, compaction model e ferramentas (`image_generate`, `video_generate`, `x_search`).
+- **Subscriptions** (`subscriptions`): provedores por assinatura (Codex, Claude, Grok, Copilot e Google Antigravity via CLI `agy`), pools de contas, proxy HTTP e ferramentas (`image_generate`, `video_generate`, `x_search`).
 - **Thinking Provider** (`thinking-provider`): níveis de raciocínio (*reasoning effort*) para modelos de terceiros, slider no composer, rota/esforço padrão de subagentes, política de compactação e headers OpenCode.
-- **General Configs** (`general-configs`, serviços host sempre montados; sub-toggles da barra lateral desativados por padrão): utilidades gerais no PC — **Sidebar Bottom** (busca em sessões com Enter FTS5 + lupa interna flutuante, engrenagem de configurações substituindo `... More`) e **Contexto / Compactação** (seletor unificado de modelo de compactação compartilhando `compaction-model.json`).
+- **General Configs** (`general-configs`, serviços host sempre montados; sub-toggles da barra lateral desativados por padrão): utilidades gerais no PC — **Sidebar Bottom** (busca em sessões com Enter FTS5 + lupa interna flutuante, engrenagem de configurações substituindo `... More`) e **Contexto / Compactação** (seletor de modelo de compactação do Spig Toolkit).
 
 > **Nota:** a inicialização supervisionada do Windows (porta 3080 sem login) e o botão de Restart da barra lateral foram movidos para o plugin `spig-dsh-supervisor`. Instale-o separadamente para essas funções.
 

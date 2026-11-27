@@ -2,8 +2,6 @@ import { createCliAdapter } from "./antigravity-cli-adapter.js";
 import { createAcpTransport } from "./antigravity-acp-transport.js";
 import { registerAdapterWithJournal } from "./lifecycle-journal.js";
 import { agyPromptGuard, agyRouteFix, agyToolBridge, setAgyToolBridge, agyTransport, debugLog, listAgyModels, readAgyUsage, readAgyVersion, onAgyTransportChange, setAgyPromptGuard, setAgyRouteFix, setAgyTransport } from "./antigravity-cli-local.js";
-import { installAgyOverflowRecovery } from "./antigravity-cli-recovery.js";
-import { COMPACTION_EFFORTS, CompactionModelStore, installCompactionRouting, summaryChunkBudget } from "./compaction-model.js";
 import z from "@deepseek-ai/schemastery";
 import * as llm from "@deepseek-ai/dsh-llm";
 import { CONTEXT_WINDOW_EXCEEDED_CODE, EMPTY_RESPONSE_CODE, LlmAdapter, LlmError, QUOTA_EXCEEDED_CODE, ReasoningEffortId, attributionHeaders, errorChain, isContextWindowExceededError, isQuotaExceededError, resolveRetryPolicy } from "@deepseek-ai/dsh-llm";
@@ -1525,8 +1523,6 @@ const SUBSCRIPTIONS_AUTH_ENDPOINTS = [
 	"setAgyPromptGuard",
 	"setAgyToolBridge",
 	"setCodexFast",
-	"compactionModel",
-	"setCompactionModel",
 	"status",
 	"login",
 	"manual",
@@ -1855,15 +1851,6 @@ async function dispatch(controller, speed, proxy, modelDefaults, endpoint, paylo
 			const enabled = readToggleValue(payload, "value");
 			await providerSettings.patch("codex", { fastAllowed: enabled });
 			return ok({ ok: true, fastAllowed: enabled });
-		}
-		case "compactionModel": {
-			if (!providerSettings?.compactionModel) throw new BadRequest("compaction model settings are unavailable");
-			return ok(await providerSettings.compactionModel());
-		}
-		case "setCompactionModel": {
-			if (!providerSettings?.setCompactionModel) throw new BadRequest("compaction model settings are unavailable");
-			await providerSettings.setCompactionModel(payload?.value ?? null);
-			return ok(await providerSettings.compactionModel());
 		}
 		case "status": {
 			const entries = await Promise.all(PROVIDER_IDS.map(async (provider) => [provider, await controller.status(provider).catch((error) => ({
@@ -13082,13 +13069,6 @@ function apply(ctx, config) {
 	setAgyPromptGuard(preferences.agyPromptGuard());
 	setAgyToolBridge(preferences.agyToolBridge());
 	setAgyTransport(preferences.agyTransport());
-	// User-chosen compaction model (Settings → Subscriptions → Compaction model):
-	// only summarization calls are re-routed, on every provider route.
-	const compactionModel = new CompactionModelStore(dshHomePath("plugins", "subscriptions", "compaction-model.json"));
-	installCompactionRouting(ctx, {
-		store: compactionModel,
-		onWarn: (message) => ctx.logger.warn(`dsh-plugin-subscriptions: ${message}`)
-	});
 	agyAccountLabelValue = preferences.agyAccountLabel();
 	const codexVersion = new CodexClientVersionCache();
 	const claudeVersion = new ClaudeCliVersionCache();
@@ -13374,14 +13354,6 @@ function apply(ctx, config) {
 			// TOOLKIT DIVERGENCE: always-on rotating adapter lifecycle journal
 			// with code fingerprint, to diagnose NO_ADAPTER after mount/remount.
 			handles.set("antigravity", registerAdapterWithJournal(ctx, { provider: "antigravity", adapter, providers }));
-			// The CLI route refuses prompts above its byte ceiling instead of letting
-			// agy drop their tail; this compacts the history (never the current
-			// request) and retries. Owned by the plugin context. With a compaction
-			// model outside the CLI, one summary can take the whole history.
-			installAgyOverflowRecovery(ctx, {
-				onWarn,
-				chunkBudgetFor: (_agent, signal) => summaryChunkBudget({ store: compactionModel, llm: ctx.llm, signal })
-			});
 			break;
 		}
 	}
@@ -13581,46 +13553,6 @@ function apply(ctx, config) {
 		displayName: (provider) => preferences.get(provider).displayName,
 		visibleModels: (provider) => preferences.get(provider).visibleModels,
 		codexFastAllowed: () => preferences.codexFastAllowed(),
-		/** The compaction-model choice plus every registered route and its models, for the Settings picker. */
-		async compactionModel() {
-			const providers = [];
-			for (const provider of ctx.llm.listProviders()) {
-				const models = await withTimeout(() => ctx.llm.listModels(provider.id), DISCOVERY_TIMEOUT_MS).catch(() => []);
-				providers.push({
-					id: provider.id,
-					name: provider.name,
-					models: (models ?? []).map((model) => ({
-						id: model.id,
-						name: model.name
-					}))
-				});
-			}
-			return {
-				current: compactionModel.get() ?? null,
-				efforts: COMPACTION_EFFORTS,
-				providers
-			};
-		},
-		/** Save a choice (validated against the live route), or `null` for the conversation's own model. */
-		async setCompactionModel(value) {
-			if (value !== null) {
-				if (typeof value !== "object" || Array.isArray(value)) throw new BadRequest("value must be an object or null");
-				if (!ctx.llm.listProviders().some((provider) => provider.id === value.provider)) throw new BadRequest(`provider ${String(value.provider)} is not registered`);
-				try {
-					await ctx.llm.resolveModelInfo(String(value.provider), String(value.model ?? ""));
-				} catch (error) {
-					throw new BadRequest(`model ${String(value.model)} is not available on ${String(value.provider)}: ${error instanceof Error ? error.message : String(error)}`);
-				}
-				// The effort list is the same for every model. A level the chosen model
-				// does not declare is not refused here: the routing falls back to the
-				// model's own default and records why (see compaction-model.js).
-			}
-			try {
-				await compactionModel.set(value);
-			} catch (error) {
-				throw new BadRequest(error instanceof Error ? error.message : String(error));
-			}
-		},
 		/** Merge one toggle into the stored provider document (`set` replaces it whole). */
 		async patch(provider, partial) {
 			await this.set(provider, {

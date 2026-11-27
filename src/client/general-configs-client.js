@@ -23,7 +23,7 @@ function createGeneralConfigsClient(require) {
       settingsGearLabel: "Settings gear button",
       settingsGearHint: "Replaces the '... More' account menu with a direct Settings gear icon on the right.",
       compactionTitle: "Context / Compaction",
-      compactionHint: "Model that summarizes history when a conversation is compacted. Shares the same store as Subscriptions (compaction-model.json).",
+      compactionHint: "Model that summarizes history when a conversation is compacted. Owned by Spig Toolkit; only summaries are sent to it.",
       compactionStatusDefault: "Same model as the conversation (DSH default).",
       compactionStatusChosen: "{provider} · {model} · {scope}",
       compactionConfigure: "Configure…",
@@ -61,7 +61,7 @@ function createGeneralConfigsClient(require) {
       settingsGearLabel: "Botão engrenagem configurações",
       settingsGearHint: "Substitui o menu '... More' por um ícone de engrenagem à direita que abre Configurações direto.",
       compactionTitle: "Contexto / Compactação",
-      compactionHint: "Modelo usado para resumir o histórico ao compactar uma conversa. Compartilha a mesma fonte de verdade do Subscriptions (compaction-model.json).",
+      compactionHint: "Modelo usado para resumir o histórico ao compactar uma conversa. Pertence ao Spig Toolkit; só resumos são enviados a ele.",
       compactionStatusDefault: "Mesmo modelo da conversa (padrão DSH).",
       compactionStatusChosen: "{provider} · {model} · {scope}",
       compactionConfigure: "Configurar…",
@@ -924,12 +924,8 @@ function createGeneralConfigsClient(require) {
     const [effort, setEffort] = useState("default");
 
     const callCompaction = useCallback(async (action, payload) => {
-      // Prefer subscriptions.auth when active so both share the exact same in-memory store.
-      const subMethod = action === "get" ? "compactionModel" : "setCompactionModel";
-      try {
-        const subRes = await connection.rpc.call("/api", `subscriptions.${subMethod}`, payload ?? {});
-        if (subRes && subRes.ok) return subRes.value;
-      } catch {}
+      // The compaction-model choice lives here now (spig-general RPC only);
+      // Subscriptions no longer owns, routes, or renders it.
       const genMethod = action === "get" ? "spig-general.compactionGet" : "spig-general.compactionSet";
       const genRes = await connection.rpc.call("/api", genMethod, payload ?? {});
       if (genRes && genRes.ok) return genRes.value;

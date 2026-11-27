@@ -67,7 +67,7 @@ spig-dsh-toolkit/
 2. **Client (Web UI)**: O bundle `lib/client.js` expõe a seção **Settings → Spig Toolkit** com um toggle para cada componente. Cada componente com UI própria é montado/desmontado dinamicamente via `ctx.plugin(...)` / `fork.dispose()` no Client, sem precisar reiniciar o DSH.
 3. **Persistência**:
    - Estado dos toggles: `$DSH_HOME/plugins/spig-dsh-toolkit/components.json`.
-   - Configurações do **Subscriptions**: mantidas integralmente em `$DSH_HOME/plugins/subscriptions/` (tokens OAuth, proxy, compaction-model, preferências de modelos e contas são preservados automaticamente).
+   - Configurações do **Subscriptions**: mantidas integralmente em `$DSH_HOME/plugins/subscriptions/` (tokens OAuth, proxy, preferências de modelos e contas são preservados automaticamente). O modelo de compactação mora em `$DSH_HOME/plugins/spig-dsh-toolkit/compaction-model.json` (com importação única do legado `plugins/subscriptions/`), propriedade do General Configs.
    - Configurações do **Thinking Provider**: lidas da seção de configurações do DSH (`thinking-effort`), preservando configurações existentes.
 4. **Prevenção de conflitos**: Antes de montar um componente, `detectLegacyConflict` verifica se o plugin standalone equivalente (`spig-dsh-subscriptions` ou `spig-dsh-thinking-provider`) está ativo no perfil. Em caso de conflito, o componente do Toolkit não é montado de forma duplicada e exibe um aviso claro na tela de configurações.
 
@@ -107,6 +107,13 @@ Antigravity, tool bridge, recovery de overflow e tradutor Anthropic) agora vive
 **diretamente em `components/subscriptions/lib/` neste repo** — ele é a fonte
 primária, não mais um espelho. Não ressincronize a partir do repo antigo; edite
 aqui e porte os testes em `test/` junto (`npm test` protege as regressões).
+
+A escolha do modelo de compactação (`compaction-model.json`, roteamento
+`llm/stream` e RPC `spig-general.compactionGet/compactionSet`) pertence
+**exclusivamente ao General Configs** (`src/components/general-configs/`),
+sempre montado: o Subscriptions não armazena, roteia, expõe RPC nem renderiza
+nada de compactação (inclusive o recovery de overflow do CLI Antigravity é
+registrado pelo General Configs, dimensionado pelo modelo escolhido).
 
 Divergências intencionais mantidas com comentário `TOOLKIT DIVERGENCE`:
 
