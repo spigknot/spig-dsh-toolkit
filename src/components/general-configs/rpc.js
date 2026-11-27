@@ -5,9 +5,6 @@ export const GENERAL_RPC_PREFIX = "spig-general.";
 export const GENERAL_RPC_ENDPOINTS = [
   "get",
   "update",
-  "startupStatus",
-  "setStartup",
-  "restart",
   "compactionGet",
   "compactionSet",
   "ftsSearch",
@@ -48,24 +45,6 @@ export async function dispatchGeneralRpc(deps, endpoint, payload) {
       case "update": {
         const settings = await deps.store.update(payload);
         return { ok: true, value: { settings } };
-      }
-      case "startupStatus": {
-        const status = await deps.startup.getStatus();
-        return { ok: true, value: status };
-      }
-      case "setStartup": {
-        if (!payload || typeof payload !== "object" || typeof payload.enabled !== "boolean") {
-          return {
-            ok: false,
-            error: { code: "general/bad-request", message: "setStartup requires { enabled: boolean }" },
-          };
-        }
-        const status = await deps.startup.setEnabled(payload.enabled);
-        return { ok: true, value: status };
-      }
-      case "restart": {
-        const result = await deps.startup.requestRestart();
-        return { ok: true, value: result };
       }
       case "compactionGet": {
         const view = await deps.compaction.getView();

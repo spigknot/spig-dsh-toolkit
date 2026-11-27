@@ -8,7 +8,7 @@ Operational notes for coding agents working in `D:\Projetos\spig-dsh-toolkit`.
 - `npm run build` (`node scripts/build.mjs`) rebuilds only the browser bundle `lib/client.js` (required after editing `src/client/*` or `components/*/lib/client.js`; verified by `npm run check`). Host-side changes in `src/` and `components/*/lib/` do not pass through `build.mjs`. See `docs/ARCHITECTURE.md` for component layout.
 
 ## Host reload & verifying running code
-- The DSH host may remount plugins in-process, **or** keep previously loaded ESM modules cached until a full supervisor restart (`dsh-navegador.mjs`, not just the child `DeepSeek Harness.exe ... web`).
+- The DSH host may remount plugins in-process, **or** keep previously loaded ESM modules cached until a full host restart.
 - Always verify which code is loaded in the live host via `node scripts/diagnose-antigravity.mjs --check-live` (compares disk fingerprint against `code` in `$DSH_HOME/plugins/subscriptions/subscriptions-lifecycle.log`).
 
 ## Commands & gates

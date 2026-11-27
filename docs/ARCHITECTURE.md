@@ -24,27 +24,24 @@ spig-dsh-toolkit/
 │   │   ├── subscriptions.js        # Definição do componente Subscriptions
 │   │   ├── thinking-provider.js    # Definição do componente Thinking Provider
 │   │   ├── general-configs.js      # Definição do componente General Configs (host sempre montado em lib/index.js; sub-toggles false por padrão)
-│   │   └── general-configs/        # Store atômico, Windows Startup (3080) e RPC /api/spig-general.*
+│   │   └── general-configs/        # Store atômico e RPC /api/spig-general.* (5 endpoints: get/update/compactionGet/compactionSet/ftsSearch)
 │   └── client/
 │       ├── toolkit-client.js       # UI de Settings + Plugins detail (plugins.bundle.config) + orquestrador
-│       └── general-configs-client.js # UI de General Configs, Sidebar Bottom, Session Search/lupa e Compactação
+│       └── general-configs-client.js # UI de General Configs, Sidebar Bottom (busca/lupa/gear via slots) e Compactação
 ├── components/                     # Runtime encapsulado dos componentes integrados
-│   ├── general-configs/autostart/  # Wrapper 3080 (dsh-navegador/local-web-proxy) + supervisor Windows embutidos
 │   ├── subscriptions/
 │   └── thinking-provider/
 ├── cordis.patch.yml               # Camada do bundle: registra o toolkit + ativa
 │                                  # `session-query-sqlite` (FTS5, openAt: first-search,
 │                                  # path via `dshHomePath('session-search.db')`)
 │
-│ Nota sobre o supervisor/restart (arquitetura staged): o bundle em
-│ `components/general-configs/autostart/` é imutável e sincronizado por SHA-256
-│ no mount/install para `$DSH_HOME/plugins/spig-dsh-toolkit/autostart/{runtime,run,logs,backup}`.
-│ `querySupervisor`/`requestRestart` operam exclusivamente sobre esse diretório
-│ staged. O restart real é suicídio gracioso do próprio host quando ele prova
-│ viver sob o wrapper rastreado — o wrapper encerra o proxy e o supervisor
-│ reboota a árvore (~15s). Um `-Restart` disparado de DENTRO da árvore-alvo é
-│ reaped pelo próprio `taskkill /T` antes de concluir (no-op silencioso); por
-│ isso ele só é usado contra instância externa.
+│ Nota sobre o split 2.0: a inicialização supervisionada do Windows (wrapper
+│ 3080, Scheduled Task, runtime staged) e o botão de Restart da sidebar foram
+│ movidos para o plugin `spig-dsh-supervisor`. Este repositório não contém mais
+│ `components/general-configs/autostart/`, `startup.js`, rotas
+│ `spig-general.startupStatus/setStartup/restart` nem o toggle `restartButton`.
+│ O store ignora chaves extras legadas (ex. `restartButton`) sem erro; a
+│ preferência é importada uma única vez pelo Supervisor.
 ├── scripts/
 │   └── build.mjs                   # Gera `lib/client.js` combinando toolkit + clients dos componentes
 └── test/
@@ -155,6 +152,4 @@ Divergências intencionais mantidas com comentário `TOOLKIT DIVERGENCE`:
   (`call_...|fc_...`) não quebrar a API Anthropic com HTTP 400.
 
 **Alterações em `components/*/lib/*.js` (Host-side) exigem reinício completo do
-DSH** (supervisor `dsh-navegador.mjs); `node scripts/build.mjs` só reconstrói
-`lib/client.js`. O build é determinístico: rebuild sem mudanças de fonte produz
-byte-identical.
+host DSH;** `node scripts/build.mjs` só reconstrói `lib/client.js`. O build é determinístico: rebuild sem mudanças de fonte produz byte-identical.

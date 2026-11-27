@@ -2,6 +2,3 @@ node_modules/
 *.log
 .DS_Store
 .dsh/
-components/general-configs/autostart/dsh-autostart/run/
-components/general-configs/autostart/dsh-autostart/logs/
-components/general-configs/autostart/dsh-autostart/backup/

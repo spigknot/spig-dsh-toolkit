@@ -8,7 +8,6 @@ const STORE_VERSION = 1;
 export const DEFAULT_GENERAL_CONFIGS = Object.freeze({
   sidebarBottom: Object.freeze({
     sessionSearch: false,
-    restartButton: false,
     settingsGear: false,
   }),
 });
@@ -29,10 +28,11 @@ function normalizeSettings(raw) {
   const sb = raw && typeof raw === "object" && raw.sidebarBottom && typeof raw.sidebarBottom === "object"
     ? raw.sidebarBottom
     : {};
+  // Allowlist: unknown keys from older files are ignored on load and dropped
+  // on the next save; they never throw.
   return {
     sidebarBottom: {
       sessionSearch: typeof sb.sessionSearch === "boolean" ? sb.sessionSearch : DEFAULT_GENERAL_CONFIGS.sidebarBottom.sessionSearch,
-      restartButton: typeof sb.restartButton === "boolean" ? sb.restartButton : DEFAULT_GENERAL_CONFIGS.sidebarBottom.restartButton,
       settingsGear: typeof sb.settingsGear === "boolean" ? sb.settingsGear : DEFAULT_GENERAL_CONFIGS.sidebarBottom.settingsGear,
     },
   };

@@ -36,7 +36,6 @@ const syntaxTargets = [
 	),
 	join(ROOT, 'components', 'subscriptions', 'lib', 'translate', 'anthropic.js'),
 	join(ROOT, 'components', 'subscriptions', 'lib', 'providers', 'rate-limit.js'),
-	...collectJsFiles(join(ROOT, 'components', 'general-configs', 'autostart')),
 	...collectJsFiles(join(ROOT, 'components', 'thinking-provider', 'lib')),
 ];
 

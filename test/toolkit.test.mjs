@@ -265,35 +265,34 @@ test("GeneralConfigsStore persists sidebarBottom sub-toggles atomically and defa
   try {
     const store1 = new GeneralConfigsStore({ filePath });
     assert.deepEqual(store1.snapshot(), {
-      sidebarBottom: { sessionSearch: false, restartButton: false, settingsGear: false },
+      sidebarBottom: { sessionSearch: false, settingsGear: false },
     });
 
     await store1.update({ sidebarBottom: { sessionSearch: true, settingsGear: true } });
     const store2 = new GeneralConfigsStore({ filePath });
     assert.deepEqual(store2.snapshot(), {
-      sidebarBottom: { sessionSearch: true, restartButton: false, settingsGear: true },
+      sidebarBottom: { sessionSearch: true, settingsGear: true },
+    });
+
+    // A pre-split file may still carry unknown keys: they are ignored on
+    // load and dropped on the next save, never an error.
+    await store2.update({ sidebarBottom: { sessionSearch: true, settingsGear: true, extraKey: 1 } });
+    const legacy = new GeneralConfigsStore({ filePath });
+    assert.deepEqual(legacy.snapshot(), {
+      sidebarBottom: { sessionSearch: true, settingsGear: true },
     });
 
     const deps = {
       store: store2,
-      startup: {
-        getStatus: async () => ({ installed: false }),
-        setEnabled: async (e) => ({ installed: e }),
-        requestRestart: async () => ({ mode: "supervisor" }),
-      },
       compaction: { getView: async () => ({ current: null, providers: [] }), set: async () => ({ current: null, providers: [] }) },
     };
     const res = await dispatchGeneralRpc(deps, "get", {});
     assert.equal(res.ok, true);
     assert.equal(res.value.settings.sidebarBottom.sessionSearch, true);
 
-    const upd = await dispatchGeneralRpc(deps, "update", { sidebarBottom: { restartButton: true } });
+    const upd = await dispatchGeneralRpc(deps, "update", { sidebarBottom: { settingsGear: true } });
     assert.equal(upd.ok, true);
-    assert.equal(upd.value.settings.sidebarBottom.restartButton, true);
-
-    const rst = await dispatchGeneralRpc(deps, "restart", {});
-    assert.equal(rst.ok, true);
-    assert.equal(rst.value.mode, "supervisor");
+    assert.equal(upd.value.settings.sidebarBottom.settingsGear, true);
 
     const bad = await dispatchGeneralRpc(deps, "nope", {});
     assert.equal(bad.ok, false);
@@ -345,8 +344,6 @@ test("GeneralConfigsStore persists sidebarBottom sub-toggles atomically and defa
   }
 });
 
-import { DEFAULT_AUTOSTART_DIR, createStartupController } from "../src/components/general-configs/startup.js";
-import { existsSync } from "node:fs";
 import {
   DEFAULT_RATE_LIMIT_MAX_WAIT_MS,
   DEFAULT_RATE_LIMIT_WAIT,
@@ -355,11 +352,8 @@ import {
   subscriptionRetryPolicy,
 } from "../components/subscriptions/lib/providers/rate-limit.js";
 
-test("DEFAULT_COMPONENTS lists only toggleable components and autostart scripts are bundled", () => {
+test("DEFAULT_COMPONENTS lists only toggleable components", () => {
   assert.deepEqual(DEFAULT_COMPONENTS.map((c) => c.id), ["subscriptions", "thinking-provider"]);
-  assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "setup.cmd")), true);
-  assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "..", "dsh-navegador.mjs")), true);
-  assert.equal(existsSync(join(DEFAULT_AUTOSTART_DIR, "..", "local-web-proxy.mjs")), true);
 });
 
 test("quota waits fail fast by default: disclosed resets past 2 min end the turn", () => {
@@ -384,18 +378,7 @@ test("quota waits fail fast by default: disclosed resets past 2 min end the turn
   assert.equal(patient.maxDelayMs, 21_600_000);
 });
 
-test("querySupervisor never throws with an isolated empty state directory", async () => {
-  const dir = makeTempDir();
-  try {
-    const ctl = createStartupController({ stateDir: dir });
-    const status = await ctl.querySupervisor();
-    assert.equal(status.supported, process.platform === "win32");
-    assert.equal(typeof status.managed, "boolean");
-    assert.equal(typeof status.dir, "string");
-    assert.equal(typeof status.inManagedTree, "boolean");
-    assert.equal(status.managed, false);
-    assert.equal(status.dir, dir);
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test("generalApiVersion marker exposes the cleaned generation to the supervisor", async () => {
+  const { generalConfigsComponent } = await import("../src/components/general-configs.js");
+  assert.equal(generalConfigsComponent.hostPlugin.generalApiVersion, 2);
 });

@@ -5,7 +5,6 @@ import {
   installCompactionRouting,
 } from "../../components/subscriptions/lib/compaction-model.js";
 import { GeneralConfigsStore, defaultGeneralConfigsPath } from "./general-configs/store.js";
-import { createStartupController } from "./general-configs/startup.js";
 import { registerGeneralRpc } from "./general-configs/rpc.js";
 
 const DISCOVERY_TIMEOUT_MS = 5000;
@@ -96,13 +95,14 @@ function createCompactionBridge(ctx, { onWarn }) {
 /**
  * General Configs component descriptor.
  * Expandable layout & general behavior menu (Sidebar Bottom, Session Search,
- * Windows logon autostart on port 3080, and Context Compaction model).
+ * and Context Compaction model). Supervised Windows startup and the sidebar
+ * restart button live in spig-dsh-supervisor (>= 1.0.0).
  */
 export const generalConfigsComponent = {
   id: "general-configs",
   title: "General Configs",
   description:
-    "Layout and general PC behavior: Sidebar Bottom (session search, restart button, settings gear), Windows logon autostart (port 3080, no auth), and Context Compaction model.",
+    "Layout and general PC behavior: Sidebar Bottom (session search, settings gear) and Context Compaction model.",
   defaultEnabled: false,
   settingsSectionId: "spig-general-configs",
   legacyPluginNames: [],
@@ -111,6 +111,10 @@ export const generalConfigsComponent = {
   },
   hostPlugin: {
     name: "spig-dsh-toolkit:general-configs",
+    // Generation marker consumed by spig-dsh-supervisor's conflict detector:
+    // only a toolkit that exposes generalApiVersion 2 is known to be free of
+    // the autostart/restart surface (moved to the supervisor plugin).
+    generalApiVersion: 2,
     inject: [],
     apply(ctx, config = {}) {
       const onWarn = (msg) => ctx.logger?.warn?.(msg);
@@ -118,16 +122,6 @@ export const generalConfigsComponent = {
         filePath: config.statePath ?? defaultGeneralConfigsPath(dshHomePath),
         onWarn,
       });
-      const startup = createStartupController({
-        stateDir: config.autostartDir,
-        dshHomePath,
-        taskName: config.taskName,
-        healthUrl: config.healthUrl,
-        onWarn,
-      });
-      try { startup.syncRuntimeIfInstalled(); } catch (err) {
-        onWarn("autostart runtime sync failed: " + (err instanceof Error ? err.message : String(err)));
-      }
       const compaction = createCompactionBridge(ctx, { onWarn });
       const sessionQuery = () => {
         try {
@@ -136,7 +130,7 @@ export const generalConfigsComponent = {
           return undefined;
         }
       };
-      registerGeneralRpc(ctx, { store, startup, compaction, sessionQuery });
+      registerGeneralRpc(ctx, { store, compaction, sessionQuery });
     },
   },
 };

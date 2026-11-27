@@ -209,7 +209,7 @@ LIVE PARITY: UNKNOWN (no lifecycle entries with code fingerprint; disk=${diskTag
 LIVE PARITY: OK (live=${liveTag} matches disk, event=${liveEvent.event}, pid=${liveEvent.pid ?? '?'})`);
 	} else {
 		console.log(`
-LIVE PARITY: DRIFT (live=${liveTag} != disk=${diskTag}; restart supervisor dsh-navegador.mjs)`);
+LIVE PARITY: DRIFT (live=${liveTag} != disk=${diskTag}; reload the DSH host to pick up the on-disk code)`);
 		process.exit(1);
 	}
 }
