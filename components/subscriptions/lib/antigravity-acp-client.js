@@ -80,7 +80,7 @@ function failure(detail, code = 'ACP_TRANSPORT') {
 export function createAcpClient({
 	workspaceDir, contextDir, stateDir, spawn = nodeSpawn,
 	bin = process.env.DSH_AGY_BIN?.trim() || 'agy', startupTimeoutMs = 30_000,
-	turnTimeoutMs = 180_000, shutdownGraceMs = 250, realpath = fsRealpath, stat = fsStat,
+	turnTimeoutMs = 180_000, turnMaxMs = 15 * 60_000, shutdownGraceMs = 250, realpath = fsRealpath, stat = fsStat,
 	platform = process.platform, killTree = (child) => forceProcessTree(child, platform),
 	onWarn = () => {},
 }) {
@@ -164,12 +164,15 @@ export function createAcpClient({
 		if (typeof message.method === 'string') {
 			if (Object.hasOwn(message, 'id')) {
 				if (message.method === 'session/request_permission') {
+					if (turn?.accepting && turn.sessionId === message.params?.sessionId) turn.touch();
 					permission(message).catch(() => stop(transportError('Antigravity ACP permission response failed')));
 				} else write({ id: message.id, error: { code: -32601, message: 'Method not found' } });
 				return;
 			}
 			if (message.method === 'session/update') {
 				const { sessionId, update } = message.params ?? {};
+				// Any progress on the active prompt keeps its idle timeout alive.
+				if (turn?.accepting && turn.sessionId === sessionId) turn.touch();
 				const replay = replays.get(sessionId);
 				if (replay && update?.content?.type === 'text' && typeof update.content.text === 'string' && update.content.text.trim()) {
 					if (update.sessionUpdate === 'user_message_chunk') replay.user = true;
@@ -217,7 +220,7 @@ export function createAcpClient({
 		}
 	}
 
-	function request(method, params, signal, timeoutMs, onSettled) {
+	function request(method, params, signal, timeoutMs, onSettled, { maxMs, onStart, diagnostic } = {}) {
 		if (signal?.aborted) {
 			const error = aborted();
 			stop(error);
@@ -227,15 +230,28 @@ export function createAcpClient({
 		return new Promise((resolve, reject) => {
 			const id = ++nextId;
 			const onAbort = () => stop(aborted(), true);
-			const timer = setTimeout(() => stop(failure(`${stderr}\nAntigravity ACP ${method} timed out`, 'TIMEOUT'), true), timeoutMs);
+			const expire = (kind) => {
+				const error = failure(`${stderr}\nAntigravity ACP ${method} timed out`, 'TIMEOUT');
+				error.acpDiagnostic = `${method} ${kind} timeout${diagnostic ? `; ${diagnostic()}` : ''}`;
+				stop(error, true);
+			};
+			// `timeoutMs` is an idle limit when `refresh` is used; `maxMs` caps the whole call.
+			let timer = setTimeout(() => expire('idle'), timeoutMs);
+			const hardTimer = maxMs === undefined ? undefined : setTimeout(() => expire('total'), maxMs);
+			const refresh = () => {
+				clearTimeout(timer);
+				timer = setTimeout(() => expire('idle'), timeoutMs);
+			};
 			const settled = (fn) => (value) => {
 				pending.delete(id);
 				onSettled?.();
 				clearTimeout(timer);
+				clearTimeout(hardTimer);
 				signal?.removeEventListener('abort', onAbort);
 				fn(value);
 			};
-			pending.set(id, { resolve: settled(resolve), reject: settled(reject) });
+			pending.set(id, { resolve: settled(resolve), reject: settled(reject), refresh });
+			onStart?.(id);
 			signal?.addEventListener('abort', onAbort, { once: true });
 			write({ id, method, params });
 		});
@@ -320,12 +336,22 @@ export function createAcpClient({
 		if (turn) throw transportError('Antigravity ACP already has an active prompt');
 		const queue = [];
 		let ready;
+		const startedAt = Date.now();
 		const current = turn = {
-			sessionId, owner, accepting: true,
-			push(event) { queue.push(event); ready?.(); }
+			sessionId, owner, accepting: true, updates: 0, lastActivity: startedAt,
+			push(event) { queue.push(event); ready?.(); },
+			touch() {
+				current.updates += 1;
+				current.lastActivity = Date.now();
+				if (current.requestId !== undefined) pending.get(current.requestId)?.refresh?.();
+			}
 		};
 		request('session/prompt', { sessionId, prompt: [{ type: 'text', text }] }, signal, turnTimeoutMs, () => {
 			current.accepting = false;
+		}, {
+			maxMs: turnMaxMs,
+			onStart: (id) => { current.requestId = id; },
+			diagnostic: () => `${current.updates} update(s), last ${Math.round((Date.now() - current.lastActivity) / 1000)}s ago, ${Math.round((Date.now() - startedAt) / 1000)}s total`,
 		}).then((result) => current.push({ result }), (error) => current.push({ error }));
 		let answer = '', leading = '';
 		let block, index = 0;

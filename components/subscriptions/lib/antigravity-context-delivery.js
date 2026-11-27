@@ -229,7 +229,7 @@ export async function deliverAcpContext(request, { contextDir, incremental = fal
 	// With the DSH tool bridge, history shows calls and results in the bridge
 	// format; the header opens a new agy session only (an incremental turn
 	// continues a session that already has it).
-	const prompt = splitPrompt(request, bridge === undefined ? undefined : { bridge });
+	let prompt = splitPrompt(request, bridge === undefined ? undefined : { bridge });
 	const header = bridge !== undefined && !incremental ? bridge.header : undefined;
 	const renderFor = (context) => (first = 0, pointer) => finalPrompt(renderPrompt({ ...prompt, context, history: pointer
 		? [{ label: 'Context', text: pointer }, ...prompt.history.slice(first)]
@@ -245,14 +245,24 @@ export async function deliverAcpContext(request, { contextDir, incremental = fal
 	let bytes = Buffer.byteLength(render(turns[last]));
 	let toolArchivePath;
 	if (bytes > limitBytes) {
+		// The active turn cannot be archived as a whole, so offload its tool
+		// results: the ones after the last answer and, on a rebuilt session, the
+		// ones from earlier steps of the same agentic turn.
+		const activeStart = turns[last];
+		const olderHistory = prompt.history.slice(0, activeStart);
+		const activeHistory = prompt.history.slice(activeStart);
+		const split = activeHistory.length;
+		const pool = [...activeHistory, ...activeContext];
+		const renderPool = (next) => finalPrompt(renderPrompt({ ...prompt, history: next.slice(0, split), context: next.slice(split) }), fix, header);
 		const offloaded = await offloadToolResults({
-			context: activeContext,
-			renderContext: (nextContext) => renderFor(nextContext)(turns[last]),
+			context: pool,
+			renderContext: renderPool,
 			contextDir, limitBytes, archiveLimitBytes, maxArchiveFiles, writeFile, bridge, onWarn,
-			reserveForPointer: !incremental && prompt.history.length > 0 ? 600 : 0,
+			reserveForPointer: !incremental && olderHistory.length > 0 ? 600 : 0,
 		});
 		if (offloaded) {
-			activeContext = offloaded.context;
+			prompt = { ...prompt, history: [...olderHistory, ...offloaded.context.slice(0, split)] };
+			activeContext = offloaded.context.slice(split);
 			toolArchivePath = offloaded.archivePath;
 			render = renderFor(activeContext);
 			bytes = Buffer.byteLength(render(turns[last]));

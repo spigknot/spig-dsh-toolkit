@@ -410,7 +410,7 @@ export function splitPrompt({ messages, system }, options) {
 			return;
 		}
 		if (index <= lastAnswer) {
-			if (text.trim().length > 0) history.push({ label: role === 'user' ? LABELS[userKind(message)] : LABELS[role] ?? LABELS.user, text, turn, sourceKind: message?.source?.kind });
+			if (text.trim().length > 0) history.push({ label: role === 'user' ? LABELS[userKind(message)] : LABELS[role] ?? LABELS.user, text, turn, sourceKind: message?.source?.kind, tool: role === 'tool' });
 			return;
 		}
 		if (realUser || role === 'tool') activeTurn = Math.min(activeTurn, turn);

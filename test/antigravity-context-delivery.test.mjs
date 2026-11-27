@@ -186,3 +186,26 @@ test('offloads oversized active tool results and still archives old history on n
 	assert.match(await readFile(result.archivePath, 'utf8'), /old answer/);
 	assert.match(await readFile(result.toolArchivePath, 'utf8'), /row-60:/);
 });
+
+test('a rebuilt session offloads tool results from earlier steps of the same agentic turn', async (t) => {
+	// Regression: a session rebuilt mid-turn (after an ACP timeout fallback and
+	// compaction) must not fail with INVALID_REQUEST just because the active
+	// turn's earlier tool results are inline history.
+	const { deliverAcpContext } = await import('../components/subscriptions/lib/antigravity-context-delivery.js');
+	const contextDir = await tempContext(t);
+	const bridge = { tag: 'dsh_tc_0123456789ab', header: 'Tool protocol', names: ['read'] };
+	const body = (name) => Array.from({ length: 60 }, (_, i) => `${name}-${i + 1}: ${'z'.repeat(30)}`).join('\n');
+	const messages = [user('inspect the three files')];
+	for (const name of ['first', 'second', 'third']) {
+		const id = `call_${name}`;
+		messages.push(assistant([{ type: 'tool-call', id, name: 'read', arguments: JSON.stringify({ file_path: `${name}.js` }) }]));
+		messages.push({ role: 'tool', toolCallId: id, content: [{ type: 'text', text: body(name) }] });
+	}
+	const result = await deliverAcpContext({ messages }, { contextDir, limitBytes: 2500, bridge });
+	assert.ok(Buffer.byteLength(result.text, 'utf8') <= 2500, `${Buffer.byteLength(result.text, 'utf8')} bytes`);
+	assert.ok(result.toolArchivePath ?? result.archivePath);
+	const archived = await readFile(result.toolArchivePath ?? result.archivePath, 'utf8');
+	assert.match(archived, /first-60:/u, 'an earlier step of the active turn was archived');
+	assert.match(result.text, /inspect the three files/u, 'the request stays inline');
+	assert.match(result.text, /with the read tool/u);
+});

@@ -326,6 +326,47 @@ test('prompt RPC result classification preserves quota and auth without syntheti
 	}
 });
 
+test('prompt progress keeps the idle timeout alive; silence and the total cap still time out with a diagnostic', async (t) => {
+	// Regression: a long model step was cut at a fixed 180 s even while working.
+	let tick;
+	const fx = fake(t, withSession((request, io) => {
+		if (request.method !== 'session/prompt') return;
+		let n = 0;
+		tick = setInterval(() => {
+			n += 1;
+			update(io, 's', 'agent_thought_chunk', { content: { type: 'text', text: `t${n}` } });
+			if (n === 6) { clearInterval(tick); update(io, 's', 'agent_message_chunk', { content: { type: 'text', text: 'done' } }); io.reply(request, { stopReason: 'end_turn' }); }
+		}, 30);
+	}), { turnTimeoutMs: 80 });
+	t.after(() => clearInterval(tick));
+	await fx.client.initialize();
+	await fx.client.newSession();
+	const chunks = await collect(fx.client.prompt({ sessionId: 's', text: 'question' }));
+	assert.equal(chunks.at(-1).type, 'finish', 'six 30 ms updates outlived an 80 ms idle limit');
+
+	const silent = fake(t, withSession(() => {}), { turnTimeoutMs: 60, ignoreEof: true });
+	await silent.client.initialize();
+	await silent.client.newSession();
+	await assert.rejects(collect(silent.client.prompt({ sessionId: 's', text: 'question' })), (error) => {
+		assert.equal(error.code, 'TIMEOUT');
+		assert.match(error.acpDiagnostic, /^session\/prompt idle timeout; 0 update\(s\)/u);
+		return true;
+	});
+
+	let keepAlive;
+	const capped = fake(t, withSession((request, io) => {
+		if (request.method === 'session/prompt') keepAlive = setInterval(() => update(io, 's', 'agent_thought_chunk', { content: { type: 'text', text: '.' } }), 20);
+	}), { turnTimeoutMs: 80, turnMaxMs: 150, ignoreEof: true });
+	t.after(() => clearInterval(keepAlive));
+	await capped.client.initialize();
+	await capped.client.newSession();
+	await assert.rejects(collect(capped.client.prompt({ sessionId: 's', text: 'question' })), (error) => {
+		assert.equal(error.code, 'TIMEOUT');
+		assert.match(error.acpDiagnostic, /total timeout/u);
+		return true;
+	});
+});
+
 test('iterator return cancels even when a next call is still waiting for provider text', async (t) => {
 	let entered;
 	const started = new Promise(resolve => { entered = resolve; });
