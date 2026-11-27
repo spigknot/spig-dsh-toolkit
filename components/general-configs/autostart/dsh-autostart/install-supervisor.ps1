@@ -1,6 +1,10 @@
 param(
   [ValidateSet('Install', 'Remove')]
-  [string]$Action = 'Install'
+  [string]$Action = 'Install',
+  [string]$StateDir = '',
+  [ValidateSet('3080')]
+  [int]$Port = 3080,
+  [switch]$SkipSelfTreeGuard
 )
 
 $ErrorActionPreference = 'Stop'
@@ -9,7 +13,11 @@ $supervisorTaskName = 'DSH Browser Supervisor'
 $taskPath = '\'
 $launcher = Join-Path $PSScriptRoot 'dsh-web-launcher.ps1'
 $controlInstaller = Join-Path $PSScriptRoot 'install-control-shortcut.ps1'
-$backupDir = Join-Path $PSScriptRoot 'backup'
+if (-not $StateDir -and $env:DSH_AUTOSTART_STATE_DIR) { $StateDir = $env:DSH_AUTOSTART_STATE_DIR }
+if (-not $StateDir) { $StateDir = $PSScriptRoot }
+$StateDir = [IO.Path]::GetFullPath($StateDir)
+$backupDir = Join-Path $StateDir 'backup'
+$stateRunDir = Join-Path $StateDir 'run'
 $projectRoot = Split-Path $PSScriptRoot -Parent
 $shimDir = Join-Path $env:LOCALAPPDATA 'Programs\DSH-Web-Command'
 $shimPath = Join-Path $shimDir 'dsh.cmd'
@@ -64,8 +72,73 @@ function Install-DshCommandShim([string]$RealDsh, [string]$Node, [string]$Wrappe
   Set-UserDshPath $true
 }
 
+function Get-TaskLauncherPath($task) {
+  $action = $task.Actions[0]
+  if ($action.Arguments -match '(?i)(?:^|\s)-File\s+(?:"([^"]+)"|(\S+))') {
+    $value = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+    return [IO.Path]::GetFullPath($value)
+  }
+  if ($action.WorkingDirectory) { return [IO.Path]::GetFullPath((Join-Path $action.WorkingDirectory 'dsh-web-launcher.ps1')) }
+  return $null
+}
+function Get-TaskStateDir($task, $launcherPath) {
+  if ($task.Actions[0].Arguments -match '(?i)(?:^|\s)-StateDir\s+(?:"([^"]+)"|(\S+))') {
+    $value = if ($Matches[1]) { $Matches[1] } else { $Matches[2] }
+    return [IO.Path]::GetFullPath($value)
+  }
+  return (Split-Path $launcherPath -Parent)
+}
+function Get-CurrentProcessAncestry {
+  $processId = $PID
+  for ($i = 0; $i -lt 24 -and $processId -gt 0; $i++) {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+    if (-not $proc.ParentProcessId) { break }
+    $processId = [int]$proc.ParentProcessId
+    $processId
+  }
+}
+function Find-PortOwner([int]$targetPort) {
+  try {
+    $conn = Get-NetTCPConnection -State Listen -LocalPort $targetPort -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($conn) { return [int]$conn.OwningProcess }
+  } catch {}
+  foreach ($line in (netstat -ano -p TCP 2>$null)) {
+    if ($line -match "(?i)^\s*TCP\s+\S+:$targetPort\s+\S+\s+LISTENING\s+(\d+)\s*$") { return [int]$Matches[1] }
+  }
+  return $null
+}
+function Read-VerifiedRecordPid([string]$jsonPath) {
+  if (-not (Test-Path -LiteralPath $jsonPath)) { return $null }
+  try {
+    $record = Get-Content -LiteralPath $jsonPath -Raw | ConvertFrom-Json
+    if (-not $record.pid -or -not $record.startTimeUtc) { return $null }
+    $processId = [int]$record.pid
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue
+    if (-not $proc.CreationDate) { return $null }
+    $expected = if ($record.startTimeUtc -is [datetime]) { $record.startTimeUtc.ToUniversalTime() } else { [DateTimeOffset]::Parse($record.startTimeUtc, [Globalization.CultureInfo]::InvariantCulture).UtcDateTime }
+    if ([Math]::Abs((([datetime]$proc.CreationDate).ToUniversalTime() - $expected).TotalSeconds) -le 1) { return $processId }
+  } catch {}
+  return $null
+}
+function Wait-ProcessExit([int]$targetPid, [int]$timeoutSec) {
+  $deadline = (Get-Date).AddSeconds($timeoutSec)
+  do {
+    if (-not (Get-Process -Id $targetPid -ErrorAction SilentlyContinue)) { return $true }
+    Start-Sleep -Milliseconds 200
+  } while ((Get-Date) -lt $deadline)
+  return $false
+}
+function Wait-PortFree([int]$targetPort, [int]$timeoutSec) {
+  $deadline = (Get-Date).AddSeconds($timeoutSec)
+  do {
+    if (-not (Find-PortOwner $targetPort)) { return $true }
+    Start-Sleep -Milliseconds 200
+  } while ((Get-Date) -lt $deadline)
+  return $false
+}
+
 if ($Action -eq 'Remove') {
-  & $launcher -Pause | Out-Null
+  & $launcher -Pause -StateDir $StateDir | Out-Null
   Unregister-ScheduledTask -TaskName $taskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue
   Unregister-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath -Confirm:$false -ErrorAction SilentlyContinue
   $startupEntry = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)) 'start-dsh-web.vbs'
@@ -99,8 +172,45 @@ if (-not (Test-Path -LiteralPath $realDsh)) { throw "The DSH command was not fou
 if (-not (Test-Path -LiteralPath $nodePath)) { throw "Node.js was not found: $nodePath" }
 if (-not (Test-Path -LiteralPath $tailscalePath)) { throw "Tailscale CLI was not found: $tailscalePath" }
 
-New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 $oldSupervisor = Get-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+$oldLauncherPath = if ($oldSupervisor) { Get-TaskLauncherPath $oldSupervisor }
+$oldStateDir = if ($oldLauncherPath) { Get-TaskStateDir $oldSupervisor $oldLauncherPath }
+$isCrossDirMigration = $oldLauncherPath -and ($oldLauncherPath -ine [IO.Path]::GetFullPath($launcher))
+$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+$keepRunning = $false
+if ($isCrossDirMigration) {
+  $oldManagedPid = Read-VerifiedRecordPid (Join-Path $oldStateDir 'run\dsh-web.json')
+  $oldSupervisorPid = Read-VerifiedRecordPid (Join-Path $oldStateDir 'run\supervisor.json')
+  if (-not $SkipSelfTreeGuard -and $oldManagedPid -and (Get-CurrentProcessAncestry) -contains $oldManagedPid) {
+    Write-Error "Cannot migrate from a different supervisor directory ($oldLauncherPath) while running inside its live DSH process tree (managed pid $oldManagedPid). Run cutover out-of-tree." -ErrorAction Continue
+    exit 6
+  }
+  if ($oldSupervisor.State -eq 'Running') {
+    Stop-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath -ErrorAction SilentlyContinue
+  }
+  if (Test-Path -LiteralPath $oldLauncherPath) {
+    $stopArgs = @('-NoLogo', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $oldLauncherPath, '-Stop')
+    if ($oldStateDir -ine (Split-Path $oldLauncherPath -Parent)) { $stopArgs += @('-StateDir', $oldStateDir) }
+    & $powershell @stopArgs
+  }
+  if ($oldSupervisorPid -and -not (Wait-ProcessExit $oldSupervisorPid 3)) {
+    $proc = Get-CimInstance Win32_Process -Filter "ProcessId = $oldSupervisorPid" -ErrorAction SilentlyContinue
+    if ($proc.CommandLine -like '*dsh-web-launcher.ps1*' -and (Read-VerifiedRecordPid (Join-Path $oldStateDir 'run\supervisor.json')) -eq $oldSupervisorPid) {
+      Stop-Process -Id $oldSupervisorPid -Force -ErrorAction SilentlyContinue
+      Wait-ProcessExit $oldSupervisorPid 3 | Out-Null
+    }
+  }
+  if (-not (Wait-PortFree $Port 10)) {
+    Write-Error "Port $Port is still occupied after stopping previous supervisor ($oldLauncherPath). Aborting install to prevent split-brain." -ErrorAction Continue
+    exit 7
+  }
+} else {
+  $sameSupPid = Read-VerifiedRecordPid (Join-Path $stateRunDir 'supervisor.json')
+  $sameManagedPid = Read-VerifiedRecordPid (Join-Path $stateRunDir 'dsh-web.json')
+  $keepRunning = $sameSupPid -and $sameManagedPid -and ((Get-CurrentProcessAncestry) -contains $sameManagedPid)
+}
+
+New-Item -ItemType Directory -Force -Path $backupDir | Out-Null
 if ($oldSupervisor) {
   $backup = Join-Path $backupDir 'DSH-Browser-Supervisor-task-before-boot.xml'
   if (-not (Test-Path -LiteralPath $backup)) {
@@ -108,7 +218,7 @@ if ($oldSupervisor) {
   }
 }
 Install-DshCommandShim $realDsh $nodePath (Join-Path $projectRoot 'dsh-navegador.mjs')
-& $controlInstaller -InstallDir $PSScriptRoot | Out-Null
+& $controlInstaller -InstallDir $PSScriptRoot -StateDir $StateDir | Out-Null
 
 $userId = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $userId
@@ -122,9 +232,9 @@ $settings = New-ScheduledTaskSettingsSet `
   -RestartInterval (New-TimeSpan -Minutes 1) `
   -MultipleInstances IgnoreNew
 
-$powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 $quote = { param([string]$value) '"' + $value.Replace('"', '""') + '"' }
 $arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ' + (& $quote $launcher) +
+  ' -Port ' + [string]$Port + ' -StateDir ' + (& $quote $StateDir) +
   ' -DshUserProfile ' + (& $quote $profileRoot) + ' -DshHome ' + (& $quote $dshHome) +
   ' -NodePath ' + (& $quote $nodePath) + ' -TailscalePath ' + (& $quote $tailscalePath)
 $scheduledAction = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $PSScriptRoot
@@ -137,7 +247,7 @@ if (Test-Path -LiteralPath $legacyVbs) {
 }
 
 try {
-  if ($oldSupervisor -and $oldSupervisor.State -eq 'Running') {
+  if (-not $keepRunning -and -not $isCrossDirMigration -and $oldSupervisor -and $oldSupervisor.State -eq 'Running') {
     Stop-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath -ErrorAction SilentlyContinue
     Start-Sleep -Milliseconds 500
   }
@@ -145,8 +255,8 @@ try {
     -Action $scheduledAction -Trigger $trigger -Settings $settings -Principal $principal `
     -Description 'Starts DSH when the user signs in, binds its browser bridge to all interfaces on port 3080, and restarts it after failures.' `
     -Force | Out-Null
-  Remove-Item (Join-Path $PSScriptRoot 'run\pause.sentinel'),(Join-Path $PSScriptRoot 'run\stop.sentinel') -Force -ErrorAction SilentlyContinue
-  Start-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath
+  Remove-Item (Join-Path $stateRunDir 'pause.sentinel'),(Join-Path $stateRunDir 'stop.sentinel') -Force -ErrorAction SilentlyContinue
+  if (-not $keepRunning) { Start-ScheduledTask -TaskName $supervisorTaskName -TaskPath $taskPath }
 } catch {
   Write-Error "Could not register the DSH logon task. Details: $($_.Exception.Message)"
   exit 5

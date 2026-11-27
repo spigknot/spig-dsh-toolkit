@@ -38,7 +38,8 @@ param(
   [string]$BindHost = '',
   [int]$RestartDelay = 2,
   [ValidateRange(2, 300)][int]$UpdateCheckInterval = 5,
-  [string]$LogDir = (Join-Path $PSScriptRoot 'logs'),
+  [string]$StateDir = '',
+  [string]$LogDir = '',
   [string]$ChildCmd = '',
   [string]$ChildArgs = '',
   [string]$DshUserProfile = '',
@@ -71,7 +72,12 @@ if (-not $ChildCmd) {
 }
 if (-not $ChildArgs) { $ChildArgs = '"' + $script:WrapperPath + '" --no-open' }
 $script:SupervisesBrowserWrapper = $ChildArgs -match '(?i)dsh-navegador\.mjs'
-$runDir   = Join-Path $PSScriptRoot 'run'
+if (-not $StateDir -and $env:DSH_AUTOSTART_STATE_DIR) { $StateDir = $env:DSH_AUTOSTART_STATE_DIR }
+if (-not $StateDir) { $StateDir = $PSScriptRoot }
+$script:StateDir = [IO.Path]::GetFullPath($StateDir)
+if (-not $LogDir) { $LogDir = Join-Path $script:StateDir 'logs' }
+$LogDir = [IO.Path]::GetFullPath($LogDir)
+$runDir = Join-Path $script:StateDir 'run'
 $pidFile  = Join-Path $runDir 'dsh-web.pid'
 $stateFile = Join-Path $runDir 'dsh-web.json'
 $stopFile = Join-Path $runDir 'pause.sentinel'
@@ -104,10 +110,13 @@ function Resolve-DshBin {
   }
   return $null
 }
-New-Item -ItemType Directory -Force -Path $runDir | Out-Null
-New-Item -ItemType Directory -Force -Path $LogDir   | Out-Null
+function Ensure-StateDirs {
+  if (-not (Test-Path -LiteralPath $runDir)) { New-Item -ItemType Directory -Force -Path $runDir | Out-Null }
+  if (-not (Test-Path -LiteralPath $LogDir)) { New-Item -ItemType Directory -Force -Path $LogDir | Out-Null }
+}
 
 function Write-Log($msg) {
+  Ensure-StateDirs
   $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
   try { Add-Content -Path $logFile -Value "[$stamp] $msg" } catch { }
 }
@@ -118,6 +127,7 @@ function Read-JsonFile($path) {
 }
 
 function Write-ProcessRecord($path, $proc, $kind) {
+  Ensure-StateDirs
   try { $started = $proc.StartTime.ToUniversalTime().ToString('o') } catch { $started = $null }
   $record = [ordered]@{ pid = [int]$proc.Id; startTimeUtc = $started; kind = $kind }
   $tmp = "$path.$PID.tmp"
@@ -245,6 +255,7 @@ function Find-PortOwner([int]$port) {
 
 function Test-Paused { return ((Test-Path $stopFile) -or (Test-Path $legacyStopFile)) }
 function Set-Paused($reason) {
+  Ensure-StateDirs
   Set-Content -LiteralPath $stopFile -Value "$reason $([DateTime]::UtcNow.ToString('o'))" -Encoding ascii
   Remove-Item $legacyStopFile -Force -ErrorAction SilentlyContinue
 }
@@ -255,11 +266,12 @@ function Start-SupervisorProcess {
   $args = @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-WindowStyle','Hidden',
     '-File',('"' + $PSCommandPath + '"'),'-Port',[string]$Port,
     '-RestartDelay',[string]$RestartDelay,'-UpdateCheckInterval',[string]$UpdateCheckInterval,
+    '-StateDir',('"' + $script:StateDir + '"'),
     '-LogDir',('"' + $LogDir + '"'),
     '-DshUserProfile',('"' + $script:DshUserProfile + '"'),
-    '-DshHome',('"' + $script:DshHome + '"'),
-    '-NodePath',('"' + $script:NodePath + '"'),
-    '-TailscalePath',('"' + $script:TailscalePath + '"'))
+    '-DshHome',('"' + $script:DshHome + '"'))
+  if ($script:NodePath) { $args += @('-NodePath', ('"' + $script:NodePath + '"')) }
+  if ($script:TailscalePath) { $args += @('-TailscalePath', ('"' + $script:TailscalePath + '"')) }
   if ($BindHost) { $args += @('-BindHost',('"' + $BindHost + '"')) }
   Start-Process -FilePath $exe -ArgumentList $args -WindowStyle Hidden -PassThru
 }
@@ -291,7 +303,7 @@ if ($Status) {
   $supervisorRunning = [bool](Get-SupervisorProcess)
   [ordered]@{ paused=[bool](Test-Paused); supervisorRunning=$supervisorRunning;
     dshRunning=[bool]$managed; dshPid=$managed; port=$Port; installDir=$PSScriptRoot;
-    logDir=$LogDir } | ConvertTo-Json -Compress
+    stateDir=$script:StateDir; logDir=$LogDir } | ConvertTo-Json -Compress
   exit 0
 }
 if ($Pause) {
@@ -333,12 +345,17 @@ if ($Restart) {
 }
 if ($Start) {
   Clear-Paused
+  if (Get-SupervisorProcess) {
+    Write-Output 'Supervisor is already running.'
+    exit 0
+  }
   Start-SupervisorProcess | Out-Null
   Write-Output 'Supervision resumed.'
   exit 0
 }
 if (Test-Paused) { Write-Log 'pause sentinel present; exiting.'; exit 0 }
 
+Ensure-StateDirs
 Write-Log "launcher starting. guarding dsh web on port $Port (crash-restart delay ${RestartDelay}s)."
 
 function Start-DataNode {
@@ -351,6 +368,7 @@ function Start-DataNode {
   $env:LOCALAPPDATA = $script:DshLocalAppData
   $env:APPDATA = Join-Path $script:DshUserProfile 'AppData\Roaming'
   $env:DSH_HOME = $script:DshHome
+  $env:DSH_AUTOSTART_STATE_DIR = $script:StateDir
   if ($script:TailscalePath) { $env:DSH_TAILSCALE_PATH = $script:TailscalePath }
   # Ensure the harness home resolves to the chosen profile regardless of how the guard was
   # launched, so the credentials document is always found. DSH_HOME unset uses
@@ -570,11 +588,12 @@ function Wait-ChildExit($proc,$initialFingerprint) {
 }
 
 function Get-SupervisorMutexName {
-  $path = [IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\').ToLowerInvariant()
+  $normalizedHome = [IO.Path]::GetFullPath($script:DshHome).TrimEnd('\').ToLowerInvariant()
+  $key = "port=$Port|dshHome=$normalizedHome"
   $sha = [Security.Cryptography.SHA256]::Create()
-  try { $hash = ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($path)) | ForEach-Object {$_.ToString('x2')}) -join '' }
+  try { $hash = ($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($key)) | ForEach-Object {$_.ToString('x2')}) -join '' }
   finally { $sha.Dispose() }
-  return "Local\dsh-autostart-$($hash.Substring(0,24))"
+  return "Local\dsh-autostart-p$Port-$($hash.Substring(0,20))"
 }
 
 $mutex = New-Object Threading.Mutex($false,(Get-SupervisorMutexName))

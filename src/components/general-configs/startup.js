@@ -1,5 +1,7 @@
 import { execFile, spawn } from "node:child_process";
-import { existsSync, readFileSync, appendFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, appendFileSync, mkdirSync, writeFileSync, renameSync, unlinkSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -49,9 +51,85 @@ function logAttempt(dir, line) {
   } catch {}
 }
 
-export const DEFAULT_AUTOSTART_DIR = fileURLToPath(
-  new URL("../../../components/general-configs/autostart/dsh-autostart", import.meta.url),
+export const DEFAULT_BUNDLE_AUTOSTART_ROOT = fileURLToPath(
+  new URL("../../../components/general-configs/autostart", import.meta.url),
 );
+export const DEFAULT_AUTOSTART_DIR = join(DEFAULT_BUNDLE_AUTOSTART_ROOT, "dsh-autostart");
+const LAUNCHER = "dsh-web-launcher.ps1";
+export const AUTOSTART_RUNTIME_FILES = Object.freeze([
+  "dsh-autostart/LICENSE",
+  "dsh-autostart/README.md",
+  "dsh-autostart/control-dsh.cmd",
+  "dsh-autostart/dsh-control.ps1",
+  "dsh-autostart/dsh-web-launcher.ps1",
+  "dsh-autostart/install-control-shortcut.ps1",
+  "dsh-autostart/install-supervisor.ps1",
+  "dsh-autostart/setup.cmd",
+  "dsh-navegador.mjs",
+  "dsh-picker-browse.patch.yml",
+  "local-web-proxy.mjs",
+]);
+
+export function defaultAutostartStateDir(dshHomePathFn, onWarn) {
+  const current = process.env.DSH_AUTOSTART_STATE_DIR?.trim();
+  if (current) return current;
+  const alias = process.env.DSH_AUTOSTART_DIR?.trim();
+  if (alias) {
+    onWarn?.("[autostart] DSH_AUTOSTART_DIR is deprecated; use DSH_AUTOSTART_STATE_DIR instead.");
+    return alias;
+  }
+  if (typeof dshHomePathFn === "function") {
+    try { return dshHomePathFn("plugins", "spig-dsh-toolkit", "autostart"); } catch {}
+  }
+  return join(process.env.DSH_HOME?.trim() || join(homedir(), ".dsh"), "plugins", "spig-dsh-toolkit", "autostart");
+}
+
+function readBundle(sourceRoot) {
+  return new Map(AUTOSTART_RUNTIME_FILES.map(rel => [rel, readFileSync(join(sourceRoot, rel))]));
+}
+
+function bundleDigest(files) {
+  const hash = createHash("sha256");
+  for (const [rel, bytes] of files) hash.update(rel + "\0").update(bytes).update("\0");
+  return hash.digest("hex");
+}
+
+export function computeAutostartBundleSha256(sourceRoot = DEFAULT_BUNDLE_AUTOSTART_ROOT) {
+  return bundleDigest(readBundle(sourceRoot));
+}
+
+function readPackageVersion() {
+  return readJsonSafe(new URL("../../../package.json", import.meta.url))?.version ?? "unknown";
+}
+
+function atomicWrite(dest, bytes) {
+  const tmp = `${dest}.tmp-${process.pid}-${randomUUID()}`;
+  try {
+    writeFileSync(tmp, bytes, { flag: "wx" });
+    renameSync(tmp, dest);
+  } catch (error) {
+    try { unlinkSync(tmp); } catch {}
+    throw error;
+  }
+}
+
+export function syncAutostartRuntime({ sourceRoot = DEFAULT_BUNDLE_AUTOSTART_ROOT, runtimeDir, packageVersion = readPackageVersion() }) {
+  const files = readBundle(sourceRoot);
+  const sourceSha256 = bundleDigest(files);
+  const manifestPath = join(runtimeDir, "manifest.json");
+  const previous = readJsonSafe(manifestPath);
+  const result = { upToDate: true, sourceSha256, runtimeDir, manifestPath };
+  if (previous?.sourceSha256 === sourceSha256 && AUTOSTART_RUNTIME_FILES.every(rel => existsSync(join(runtimeDir, rel)))) {
+    return { synced: false, ...result };
+  }
+  mkdirSync(join(runtimeDir, "dsh-autostart"), { recursive: true });
+  for (const [rel, bytes] of files) atomicWrite(join(runtimeDir, rel), bytes);
+  const launcherSha256 = createHash("sha256").update(files.get(`dsh-autostart/${LAUNCHER}`)).digest("hex");
+  const syncedAt = new Date().toISOString();
+  const launcherSyncedAt = previous?.launcherSha256 === launcherSha256 ? previous.launcherSyncedAt ?? syncedAt : syncedAt;
+  atomicWrite(manifestPath, JSON.stringify({ version: 1, packageVersion, sourceSha256, launcherSha256, syncedAt, launcherSyncedAt, files: AUTOSTART_RUNTIME_FILES }, null, 2) + "\n");
+  return { synced: true, ...result, previousSha256: previous?.sourceSha256 ?? null };
+}
 // Previous standalone location of these same scripts. Never a dependency:
 // the bundled copy above is authoritative for installs. It is only *read*
 // when it still holds the live supervisor state (run/*.json) of the running
@@ -60,14 +138,6 @@ export const DEFAULT_AUTOSTART_DIR = fileURLToPath(
 export const LEGACY_AUTOSTART_DIR = "D:\\Projetos\\DeepSeekHarness\\dsh-autostart";
 export const DEFAULT_TASK_NAME = "DSH Browser Supervisor";
 export const DEFAULT_HEALTH_URL = "http://127.0.0.1:3080/__dsh_health";
-
-function candidateDirs(primary) {
-  const dirs = [];
-  for (const d of [primary, DEFAULT_AUTOSTART_DIR, LEGACY_AUTOSTART_DIR]) {
-    if (d && !dirs.includes(d)) dirs.push(d);
-  }
-  return dirs;
-}
 
 function readJsonSafe(filePath) {
   try {
@@ -109,26 +179,73 @@ async function queryScheduledTask(taskName) {
 }
 
 export function createStartupController(options = {}) {
-  const autostartDir = options.autostartDir || process.env.DSH_AUTOSTART_DIR || DEFAULT_AUTOSTART_DIR;
+  const { onWarn } = options;
+  const stateDir = options.stateDir || options.autostartDir || defaultAutostartStateDir(options.dshHomePath, onWarn);
+  const bundleRoot = options.bundleRoot ?? DEFAULT_BUNDLE_AUTOSTART_ROOT;
+  const runtimeDir = join(stateDir, "runtime");
+  const runtimeAutostartDir = join(runtimeDir, "dsh-autostart");
+  const bundleAutostartDir = join(bundleRoot, "dsh-autostart");
+  const manifestPath = join(runtimeDir, "manifest.json");
   const taskName = options.taskName || DEFAULT_TASK_NAME;
   const healthUrl = options.healthUrl || DEFAULT_HEALTH_URL;
-  const setupCmdPath = join(autostartDir, "setup.cmd");
+
+  function candidateDescriptors() {
+    const legacyDir = options.legacyDir ?? LEGACY_AUTOSTART_DIR;
+    const candidates = [
+      { id: "staged", scriptPath: join(runtimeAutostartDir, LAUNCHER), stateDir, passStateDir: true },
+      ...(options.includeBundledFallback === false ? [] : [{ id: "bundled", scriptPath: join(bundleAutostartDir, LAUNCHER), stateDir: bundleAutostartDir, passStateDir: false }]),
+      ...(options.includeLegacy === false ? [] : [{ id: "legacy", scriptPath: join(legacyDir, LAUNCHER), stateDir: legacyDir, passStateDir: false }]),
+    ];
+    const seen = new Set();
+    return candidates.filter(desc => {
+      const key = JSON.stringify([desc.scriptPath, desc.stateDir]);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }
+
+  function resolveActiveStateDir() {
+    return candidateDescriptors().find(desc => ["dsh-web.json", "supervisor.json"].some(file =>
+      existsSync(join(desc.stateDir, "run", file)),
+    ))?.stateDir ?? stateDir;
+  }
+
+  function syncRuntimeIfInstalled() {
+    if (process.platform !== "win32") return { skipped: true, reason: "non-win32" };
+    if (!existsSync(manifestPath) && !existsSync(join(runtimeAutostartDir, LAUNCHER))) {
+      return { skipped: true, reason: "not-installed" };
+    }
+    const res = syncAutostartRuntime({ sourceRoot: bundleRoot, runtimeDir });
+    if (res.synced) onWarn?.(`[autostart] runtime staged re-synced (${res.previousSha256?.slice(0, 8) ?? "none"} -> ${res.sourceSha256.slice(0, 8)}); wrapper changes apply on next DSH restart, launcher changes apply on next logon or supervisor restart.`);
+    return { skipped: false, ...res };
+  }
 
   async function getStatus() {
-    const available = process.platform === "win32" && existsSync(setupCmdPath);
+    const available = process.platform === "win32" && existsSync(join(bundleAutostartDir, "install-supervisor.ps1"));
     const [task, health] = await Promise.all([
       queryScheduledTask(taskName),
       checkHealth(healthUrl),
     ]);
-    const runDir = join(autostartDir, "run");
+    const activeStateDir = resolveActiveStateDir();
+    const runDir = join(activeStateDir, "run");
     const supervisorMeta = readJsonSafe(join(runDir, "supervisor.json"));
     const webMeta = readJsonSafe(join(runDir, "dsh-web.json"));
-    const paused = existsSync(join(runDir, "pause.sentinel"));
+    const paused = existsSync(join(runDir, "pause.sentinel")) || existsSync(join(runDir, "stop.sentinel"));
+    const manifest = readJsonSafe(manifestPath);
+    const syncedAt = Date.parse(manifest?.launcherSyncedAt);
+    const startedAt = Date.parse(supervisorMeta?.startTimeUtc);
+    const supervisorOutdated = activeStateDir === stateDir && Number.isFinite(syncedAt) && Number.isFinite(startedAt) && syncedAt > startedAt;
 
     return {
       supported: process.platform === "win32",
       available,
-      autostartDir,
+      autostartDir: stateDir,
+      stateDir,
+      activeStateDir,
+      runtimeDir,
+      runtimeSynced: Boolean(manifest),
+      supervisorOutdated,
       taskName,
       installed: task.installed,
       taskState: task.state,
@@ -148,14 +265,16 @@ export function createStartupController(options = {}) {
     if (process.platform !== "win32") {
       throw new Error("Windows logon autostart is only supported on Windows");
     }
-    if (!existsSync(setupCmdPath)) {
-      throw new Error(`setup.cmd not found at ${setupCmdPath}`);
-    }
-    const args = enabled ? ["/d", "/c", setupCmdPath] : ["/d", "/c", setupCmdPath, "-uninstall"];
+    if (enabled) syncAutostartRuntime({ sourceRoot: bundleRoot, runtimeDir });
+    const filename = "install-supervisor.ps1";
+    const staged = join(runtimeAutostartDir, filename);
+    const cwd = enabled || existsSync(staged) ? runtimeAutostartDir : bundleAutostartDir;
+    const script = join(cwd, filename);
+    if (!existsSync(script)) throw new Error(`installer not found at ${script}`);
     const { stdout, stderr } = await execFileAsync(
-      process.env.ComSpec || "cmd.exe",
-      args,
-      { cwd: autostartDir, windowsHide: true, timeout: 30000 },
+      powershellExe(),
+      ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Action", enabled ? "Install" : "Remove", "-StateDir", stateDir],
+      { cwd, windowsHide: true, timeout: 30000 },
     );
     const status = await getStatus();
     return {
@@ -164,9 +283,8 @@ export function createStartupController(options = {}) {
     };
   }
 
-  function launcherScript() {
-    return join(autostartDir, "dsh-web-launcher.ps1");
-  }
+  const psFileArgs = (script, action) => ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, action];
+  const descriptorFields = desc => ({ dir: desc.stateDir, stateDir: desc.stateDir, scriptPath: desc.scriptPath, passStateDir: desc.passStateDir, source: desc.id });
 
   /**
    * Ask the supervisor whether THIS web host is a managed instance.
@@ -176,17 +294,16 @@ export function createStartupController(options = {}) {
    */
   async function querySupervisor() {
     if (process.platform !== "win32") {
-      return { supported: false, managed: false, paused: false, dir: autostartDir };
+      return { supported: false, managed: false, paused: false, ...descriptorFields(candidateDescriptors()[0]), inManagedTree: false };
     }
     let last = null;
-    for (const dir of candidateDirs(autostartDir)) {
-      const script = join(dir, "dsh-web-launcher.ps1");
-      if (!existsSync(script)) continue;
+    for (const desc of candidateDescriptors()) {
+      if (!existsSync(desc.scriptPath)) continue;
+      const args = psFileArgs(desc.scriptPath, "-Status");
+      if (desc.passStateDir) args.push("-StateDir", desc.stateDir);
       try {
         const { stdout } = await execFileAsync(
-          powershellExe(),
-          ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-Status"],
-          { cwd: dir, windowsHide: true, timeout: 15000 },
+          powershellExe(), args, { windowsHide: true, timeout: 15000 },
         );
         const parsed = JSON.parse(String(stdout || "").trim().split(/\r?\n/).pop() || "{}");
         const result = {
@@ -196,7 +313,7 @@ export function createStartupController(options = {}) {
           supervisorRunning: Boolean(parsed.supervisorRunning),
           dshPid: parsed.dshPid ?? null,
           port: parsed.port ?? null,
-          dir,
+          ...descriptorFields(desc),
           inManagedTree: false,
         };
         if (result.managed) {
@@ -214,12 +331,13 @@ export function createStartupController(options = {}) {
           supported: true,
           managed: false,
           paused: false,
-          dir,
+          ...descriptorFields(desc),
+          inManagedTree: false,
           reason: error instanceof Error ? error.message : String(error),
         };
       }
     }
-    return last ?? { supported: true, managed: false, paused: false, dir: autostartDir, reason: "launcher-missing" };
+    return last ?? { supported: true, managed: false, paused: false, ...descriptorFields(candidateDescriptors()[0]), inManagedTree: false, reason: "launcher-missing" };
   }
 
   /**
@@ -242,22 +360,21 @@ export function createStartupController(options = {}) {
     if (process.platform !== "win32") {
       throw new Error("Harness restart is only supported on Windows");
     }
-    const script = launcherScript();
-    if (!existsSync(script)) {
-      throw new Error(`launcher script not found at ${script}`);
+    if (!candidateDescriptors().some(desc => existsSync(desc.scriptPath))) {
+      throw new Error("autostart launcher script not found");
     }
     const supervisor = await querySupervisor();
-    logAttempt(autostartDir, `request mode=${supervisor.managed ? "managed" : "unmanaged"} paused=${supervisor.paused} supervised=${supervisor.supervisorRunning} inTree=${supervisor.inManagedTree} dir=${supervisor.dir} pid=${supervisor.dshPid ?? "-"} reason=${supervisor.reason ?? "-"}`);
+    logAttempt(stateDir, `request mode=${supervisor.managed ? "managed" : "unmanaged"} paused=${supervisor.paused} supervised=${supervisor.supervisorRunning} inTree=${supervisor.inManagedTree} dir=${supervisor.dir} pid=${supervisor.dshPid ?? "-"} reason=${supervisor.reason ?? "-"}`);
     if (supervisor.paused) {
       const err = new Error("Automatic restart is paused. Resume it first (Spig Toolkit → Startup).");
-      logAttempt(autostartDir, `refused: ${err.message}`);
+      logAttempt(stateDir, `refused: ${err.message}`);
       throw err;
     }
     if (!supervisor.managed) {
       return { mode: "unmanaged", supervisor };
     }
     if (supervisor.inManagedTree && supervisor.supervisorRunning) {
-      logAttempt(autostartDir, `suicide: exiting host so the supervisor reboots wrapper pid ${supervisor.dshPid}`);
+      logAttempt(stateDir, `suicide: exiting host so the supervisor reboots wrapper pid ${supervisor.dshPid}`);
       setTimeout(() => process.exit(0), 500);
       return { mode: "supervisor", method: "suicide", supervisor };
     }
@@ -265,23 +382,24 @@ export function createStartupController(options = {}) {
       // Different instance than this host: we are OUTSIDE its tree, so a
       // spawned `-Restart` cannot reap itself — the configuration that works
       // from a terminal.
-      const restartScript = join(supervisor.dir, "dsh-web-launcher.ps1");
+      const args = psFileArgs(supervisor.scriptPath, "-Restart");
+      args.splice(4, 0, "-WindowStyle", "Hidden");
+      if (supervisor.passStateDir) args.push("-StateDir", supervisor.stateDir);
       const child = spawn(
-        powershellExe(),
-        ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", restartScript, "-Restart"],
+        powershellExe(), args,
         { cwd: supervisor.dir, windowsHide: true, detached: true, stdio: "ignore" },
       );
       child.on("error", (err) => {
-        logAttempt(autostartDir, `spawn-error: ${err instanceof Error ? err.message : String(err)}`);
+        logAttempt(stateDir, `spawn-error: ${err instanceof Error ? err.message : String(err)}`);
       });
       child.unref();
-      logAttempt(autostartDir, `spawned -Restart via ${supervisor.dir} (child pid ${child.pid ?? "?"})`);
+      logAttempt(stateDir, `spawned -Restart via ${supervisor.dir} (child pid ${child.pid ?? "?"})`);
       return { mode: "supervisor", method: "remote-restart", supervisor, spawnPid: child.pid ?? null };
     }
     const err = new Error("Managed harness found, but no live supervisor to reboot it. Restart it from a terminal.");
-    logAttempt(autostartDir, `refused: ${err.message}`);
+    logAttempt(stateDir, `refused: ${err.message}`);
     throw err;
   }
 
-  return { getStatus, setEnabled, querySupervisor, requestRestart };
+  return { getStatus, setEnabled, querySupervisor, requestRestart, syncRuntimeIfInstalled };
 }

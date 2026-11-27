@@ -1,6 +1,10 @@
 # On-demand control panel. It has no tray process and consumes no memory after
 # the window is closed.
+param([string]$StateDir = '')
 $ErrorActionPreference = 'Stop'
+if (-not $StateDir -and $env:DSH_AUTOSTART_STATE_DIR) { $StateDir = $env:DSH_AUTOSTART_STATE_DIR }
+if (-not $StateDir) { $StateDir = $PSScriptRoot }
+$StateDir = [IO.Path]::GetFullPath($StateDir)
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -24,7 +28,7 @@ if (-not (Test-Path -LiteralPath $launcher)) {
 }
 
 function Invoke-Launcher([string]$Action) {
-  try { return (& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $launcher $Action 2>&1 | Out-String).Trim() }
+  try { return (& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $launcher $Action -StateDir $StateDir 2>&1 | Out-String).Trim() }
   catch { return $_.Exception.Message }
 }
 
@@ -88,7 +92,7 @@ $openLogs = New-Object Windows.Forms.Button
 $openLogs.Location = New-Object Drawing.Point(302,140)
 $openLogs.Size = New-Object Drawing.Size(132,38)
 $openLogs.Add_Click({
-  $path = Join-Path $PSScriptRoot 'logs'
+  $path = Join-Path $StateDir 'logs'
   New-Item -ItemType Directory -Force -Path $path | Out-Null
   Start-Process explorer.exe -ArgumentList ('"' + $path + '"')
 })

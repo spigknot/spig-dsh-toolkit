@@ -119,10 +119,15 @@ export const generalConfigsComponent = {
         onWarn,
       });
       const startup = createStartupController({
-        autostartDir: config.autostartDir,
+        stateDir: config.autostartDir,
+        dshHomePath,
         taskName: config.taskName,
         healthUrl: config.healthUrl,
+        onWarn,
       });
+      try { startup.syncRuntimeIfInstalled(); } catch (err) {
+        onWarn("autostart runtime sync failed: " + (err instanceof Error ? err.message : String(err)));
+      }
       const compaction = createCompactionBridge(ctx, { onWarn });
       const sessionQuery = () => {
         try {

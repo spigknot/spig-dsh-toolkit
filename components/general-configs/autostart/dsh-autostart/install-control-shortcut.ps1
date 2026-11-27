@@ -1,6 +1,7 @@
 param(
   [string]$InstallDir = $PSScriptRoot,
   [string]$ProgramsDir,
+  [string]$StateDir = '',
   [switch]$Uninstall
 )
 
@@ -34,7 +35,9 @@ $powershell = Join-Path $PSHOME 'powershell.exe'
 $shell = New-Object -ComObject WScript.Shell
 $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $powershell
-$shortcut.Arguments = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $controlScript + '"'
+$shortcutArgs = '-NoLogo -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' + $controlScript + '"'
+if ($StateDir) { $shortcutArgs += ' -StateDir "' + [IO.Path]::GetFullPath($StateDir) + '"' }
+$shortcutArgs = $shortcutArgs
 $shortcut.WorkingDirectory = $InstallDir
 $shortcut.Description = 'Open the on-demand DSH autostart control panel'
 $shortcut.WindowStyle = 7

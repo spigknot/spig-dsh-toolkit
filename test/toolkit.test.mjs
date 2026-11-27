@@ -384,18 +384,17 @@ test("quota waits fail fast by default: disclosed resets past 2 min end the turn
   assert.equal(patient.maxDelayMs, 21_600_000);
 });
 
-test("querySupervisor never throws and adopts whichever state dir tracks the live instance", async () => {
+test("querySupervisor never throws with an isolated empty state directory", async () => {
   const dir = makeTempDir();
   try {
-    const ctl = createStartupController({ autostartDir: dir });
+    const ctl = createStartupController({ stateDir: dir, includeLegacy: false, includeBundledFallback: false });
     const status = await ctl.querySupervisor();
     assert.equal(status.supported, process.platform === "win32");
     assert.equal(typeof status.managed, "boolean");
     assert.equal(typeof status.dir, "string");
     assert.equal(typeof status.inManagedTree, "boolean");
-    // Empty dir holds no state: a managed result proves adoption of another
-    // candidate dir (the legacy location); unmanaged means no live supervisor.
-    if (status.managed) assert.notEqual(status.dir, dir);
+    assert.equal(status.managed, false);
+    assert.equal(status.dir, dir);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
