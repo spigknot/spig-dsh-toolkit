@@ -95,6 +95,80 @@ test('uses the async chunk branch without changing the legacy run branch',async(
   assert.equal((await collect(adapter.stream({model:'probe'})))[1].text,'live');
 });
 
+test('long-session timeout at session/prompt retries ACP on a fresh session instead of falling back to CLI compaction', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'spig-acp-long-retry-'));
+  const { createAcpTransport } = await import('../components/subscriptions/lib/antigravity-acp-transport.js');
+  const warnings = [], fallbacks = [], newSessions = [], prompts = [];
+  let promptAttempts = 0;
+  const transport = createAcpTransport({
+    root,
+    modeOf: () => 'acp',
+    onWarn: m => warnings.push(m),
+    fallback: async function* (o) { fallbacks.push(o); yield* emit('fallback'); },
+    clientFactory: () => ({
+      alive: true,
+      async initialize() {},
+      async newSession() { const id = `agy-${newSessions.length + 1}`; newSessions.push(id); return id; },
+      async loadSession() { return true; },
+      async *prompt({ text }) {
+        prompts.push(text);
+        promptAttempts += 1;
+        if (promptAttempts === 1) throw new local.AgyCliError('timed out', 'TIMEOUT', { acpDiagnostic: 'session/prompt idle timeout; 0 update(s)' });
+        yield* emit('recovered-on-acp');
+      },
+      dispose() { this.alive = false; },
+    }),
+  });
+  t.after(async () => { await transport.disposeAll(); await fs.rm(root, { force: true, recursive: true }); });
+  const big = 'h'.repeat(95_000);
+  const messages = [ask(big), answer(big), ask('current question')];
+  const chunks = await collect(transport.stream({ sessionId: 'dsh-long-timeout', model: 'gemini-4-hydrogen-low', messages }));
+  assert.equal(chunks.find(c => c.type === 'text-delta')?.text, 'recovered-on-acp');
+  assert.equal(fallbacks.length, 0, 'must not fall back to stream-json when history exceeds CLI ceiling');
+  assert.equal(newSessions.length, 2, 'must recreate ACP session on retry');
+  assert.ok(warnings.some(w => /retrying ACP on a fresh session/u.test(w) && /TIMEOUT/u.test(w) && w.includes('stage=session/prompt')));
+});
+
+test('long-session handshake rejection refuses destructive stream-json fallback without blind ACP retry', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'spig-acp-handshake-block-'));
+  const { createAcpTransport } = await import('../components/subscriptions/lib/antigravity-acp-transport.js');
+  const warnings = [], fallbacks = [];
+  let initCalls = 0;
+  const transport = createAcpTransport({
+    root,
+    modeOf: () => 'acp',
+    onWarn: m => warnings.push(m),
+    fallback: async function* (o) { fallbacks.push(o); yield* emit('fallback'); },
+    clientFactory: () => ({
+      alive: true,
+      async initialize() {
+        initCalls += 1;
+        throw new local.AgyCliError('handshake rejected', 'ACP_TRANSPORT', { acpDiagnostic: 'unsupported-cli-version; CLI 2.0.0' });
+      },
+      async newSession() { throw new Error('must not run'); },
+      async loadSession() { throw new Error('must not run'); },
+      async *prompt() { throw new Error('must not run'); },
+      dispose() { this.alive = false; },
+    }),
+  });
+  t.after(async () => { await transport.disposeAll(); await fs.rm(root, { force: true, recursive: true }); });
+  const big = 'h'.repeat(95_000);
+  const messages = [ask(big), answer(big), ask('current question')];
+  await assert.rejects(
+    collect(transport.stream({ sessionId: 'dsh-long-handshake', model: 'gemini-4-hydrogen-low', messages })),
+    (err) => {
+      assert.equal(err.code, 'ACP_TRANSPORT');
+      assert.ok(err.message.includes('stage=initialize'));
+      assert.ok(err.message.includes('unsupported-cli-version; CLI 2.0.0'));
+      assert.match(err.message, /would force compaction/u);
+      return true;
+    },
+  );
+  assert.equal(initCalls, 1, 'handshake failure must not waste a blind ACP retry');
+  assert.equal(fallbacks.length, 0, 'must not fall back to stream-json and force compaction');
+  assert.ok(warnings.some(w => w.includes('stage=initialize') && w.includes('unsupported-cli-version')));
+});
+
 test('transport switch defaults to compaction and changes only on valid values',()=>{
   assert.equal(local.agyTransport?.(),'compaction');
   local.setAgyTransport('acp');assert.equal(local.agyTransport(),'acp');

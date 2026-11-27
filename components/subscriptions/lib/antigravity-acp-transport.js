@@ -3,12 +3,23 @@ import { mkdir, readFile, rename, unlink, writeFile, realpath, lstat } from 'nod
 import path from 'node:path';
 import { ACP_DENIED_ANSWER, createAcpClient } from './antigravity-acp-client.js';
 import { deliverAcpContext } from './antigravity-context-delivery.js';
-import { agyBridgeFor, agyToolBridge, agyTransport, AGY_PROMPT_TOO_LARGE, AgyCliError, debugLog, runAgy, splitPrompt } from './antigravity-cli-local.js';
+import { agyBridgeFor, agyRouteFix, agyToolBridge, agyTransport, AGY_PROMPT_TOO_LARGE, AgyCliError, buildPrompt, debugLog, finalPrompt, MAX_AGY_PROMPT_BYTES, runAgy, splitPrompt } from './antigravity-cli-local.js';
 import { answerChunks, canonicalAnswer, deniedNativeToolFeedback, invalidCallFeedback, noteInvalidCalls, parseToolBridgeOutput } from './antigravity-tool-bridge.js';
 import { streamCliResult } from './antigravity-cli-adapter.js';
 
 const STATE_VERSION = 1;
 const FALLBACK_CODES = new Set(['ACP_TRANSPORT', 'TIMEOUT']);
+// Stages where recreating a fresh ACP session can recover from a broken/timed-out process.
+const SESSION_RETRY_STAGES = new Set(['session/load', 'session/new', 'session/prompt']);
+
+function measureCliPromptBytes(options, bridge) {
+  try {
+    const prompt = finalPrompt(buildPrompt(options, bridge), agyRouteFix(), bridge?.header);
+    return Buffer.byteLength(prompt, 'utf8');
+  } catch {
+    return 0;
+  }
+}
 const digest = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 
 // Compare request content and provenance, not transient IDs assigned when the
@@ -207,90 +218,116 @@ export function createAcpTransport({
     if (active.has(key)) throw new AgyCliError('Antigravity ACP already has an active turn for this session', 'INVALID_REQUEST');
     active.add(key);
     const epoch = generation;
-    let emitted = false, committed = false, shouldFallback = false, rec, broken, entry;
+    let emitted = false, committed = false, shouldFallback = false, rec, broken, entry, activeBridge;
     let stage = 'binding-store';
     try {
-      const map = await store();
-      stage = 'session-setup';
-      const workspaceDir = await streamWorkspace(options.workspaceDir);
-      const assertCurrent = () => {
-        if (options.signal?.aborted) throw new AgyCliError('Antigravity ACP request cancelled', 'ABORTED');
-        if (stopped || generation !== epoch || modeOf() !== 'acp') throw new AgyCliError('Antigravity ACP transport changed during the turn', 'ACP_TRANSPORT');
-      };
-      assertCurrent();
-      entry = map.get(key);
-      // The bridge header lives in the agy session: a different tag or catalog
-      // means a different session. Reuse the persisted tag after a restart.
-      const bridge = agyBridgeFor(options, {enabled: bridgeEnabledOf() !== false, tag: entry?.bridgeTag});
-      const bridgeKey = bridge === undefined ? null : digest([bridge.tag, bridge.header]);
-      let incremental = matches(entry, options, workspaceDir, bridgeKey);
-      rec = live.get(key);
-      if (rec && (!rec.client.alive || !incremental)) { await close(key); rec = undefined; }
-      if (!rec) {
-        let dirs;
-        try { dirs = await preparePolicy(root,key); }
-        catch { throw new AgyCliError('Antigravity ACP private policy could not be prepared', 'ACP_TRANSPORT'); }
-        assertCurrent();
-        if (live.size >= maxProcesses) {
-          const idle = [...live.keys()].find(id => !active.has(id));
-          if (!idle) throw new AgyCliError('Antigravity ACP process limit is in use', 'ACP_TRANSPORT');
-          await close(idle);
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const forceRebuild = attempt > 0;
+        rec = undefined;
+        broken = undefined;
+        stage = 'binding-store';
+        try {
+          const map = await store();
+          stage = 'session-setup';
+          const workspaceDir = await streamWorkspace(options.workspaceDir);
+          const assertCurrent = () => {
+            if (options.signal?.aborted) throw new AgyCliError('Antigravity ACP request cancelled', 'ABORTED');
+            if (stopped || generation !== epoch || modeOf() !== 'acp') throw new AgyCliError('Antigravity ACP transport changed during the turn', 'ACP_TRANSPORT');
+          };
           assertCurrent();
-        }
-        const client = clientFactory({...dirs,workspaceDir,startupTimeoutMs,turnTimeoutMs,onWarn:warn});
-        rec = {client,...dirs};
-        live.set(key,rec);
-        stage = 'initialize';
-        await client.initialize(options.signal);
-        if (incremental) {
-          stage = 'session/load';
-          incremental = await client.loadSession({sessionId:entry.agySessionId,model:options.model,signal:options.signal});
-          if (incremental) rec.agySessionId = entry.agySessionId;
-        }
-        if (!incremental) {
-          if (map.delete(key)) await save();
-          stage = 'session/new';
-          rec.agySessionId = await client.newSession({model:options.model,signal:options.signal});
-        }
-      }
-      clearTimeout(rec.timer);
-      const request = incremental ? {messages:options.messages.slice(entry.syncedCount+1)} : options;
-      stage = 'context-delivery';
-      const payload = await deliverAcpContext(request,{contextDir:rec.contextDir,incremental,onWarn:warn,bridge});
-      assertCurrent();
-      // Clear the durable checkpoint before the RPC: an interrupted provider
-      // turn may have mutated upstream even if it never produced its answer.
-      if (map.delete(key)) await save();
-      assertCurrent();
-      const text = [];
-      let calls = '';
-      const promptAcp = (promptText) => rec.client.prompt({sessionId:rec.agySessionId,text:promptText,signal:options.signal});
-      stage = 'session/prompt';
-      const source = promptAcp(payload.text);
-      for await (const chunk of bridge === undefined ? source : bridged(source, bridge, (feedback) => {
-        options.signal?.throwIfAborted();
-        return promptAcp(feedback);
-      })) {
-        if (chunk.type === 'text-delta') text.push(chunk.text);
-        if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call') calls += canonicalAnswer([chunk.block]);
-        if (chunk.type === 'finish' && chunk.reason.kind !== 'error' && chunk.reason.kind !== 'aborted' && text.join('') !== ACP_DENIED_ANSWER) {
-          if (generation === epoch && !stopped) {
-            map.set(key, {agySessionId:rec.agySessionId,model:options.model,workspaceDir,effort:options.reasoningEffort ?? null,bridgeKey,bridgeTag:bridge?.tag ?? null,
-              syncedCount:(options.messages ?? []).length,lastFingerprint:fingerprint(options.messages ?? [],options.system),answerFingerprint:digest(text.join('') + calls)});
-            await save();
-            committed = true;
-            scheduleIdle(key,rec);
+          entry = forceRebuild ? undefined : map.get(key);
+          // The bridge header lives in the agy session: a different tag or catalog
+          // means a different session. Reuse the persisted tag after a restart.
+          const bridge = agyBridgeFor(options, {enabled: bridgeEnabledOf() !== false, tag: entry?.bridgeTag});
+          activeBridge = bridge;
+          const bridgeKey = bridge === undefined ? null : digest([bridge.tag, bridge.header]);
+          let incremental = !forceRebuild && matches(entry, options, workspaceDir, bridgeKey);
+          rec = live.get(key);
+          if (rec && (!rec.client.alive || !incremental)) { await close(key); rec = undefined; }
+          if (!rec) {
+            let dirs;
+            try { dirs = await preparePolicy(root,key); }
+            catch { throw new AgyCliError('Antigravity ACP private policy could not be prepared', 'ACP_TRANSPORT'); }
+            assertCurrent();
+            if (live.size >= maxProcesses) {
+              const idle = [...live.keys()].find(id => !active.has(id));
+              if (!idle) throw new AgyCliError('Antigravity ACP process limit is in use', 'ACP_TRANSPORT');
+              await close(idle);
+              assertCurrent();
+            }
+            const client = clientFactory({...dirs,workspaceDir,startupTimeoutMs,turnTimeoutMs,onWarn:warn});
+            rec = {client,...dirs};
+            live.set(key,rec);
+            stage = 'initialize';
+            await client.initialize(options.signal);
+            if (incremental) {
+              stage = 'session/load';
+              incremental = await client.loadSession({sessionId:entry.agySessionId,model:options.model,signal:options.signal});
+              if (incremental) rec.agySessionId = entry.agySessionId;
+            }
+            if (!incremental) {
+              if (map.delete(key)) await save();
+              stage = 'session/new';
+              rec.agySessionId = await client.newSession({model:options.model,signal:options.signal});
+            }
           }
+          clearTimeout(rec.timer);
+          const request = incremental ? {messages:options.messages.slice(entry.syncedCount+1)} : options;
+          stage = 'context-delivery';
+          const payload = await deliverAcpContext(request,{contextDir:rec.contextDir,incremental,onWarn:warn,bridge});
+          assertCurrent();
+          // Clear the durable checkpoint before the RPC: an interrupted provider
+          // turn may have mutated upstream even if it never produced its answer.
+          if (map.delete(key)) await save();
+          assertCurrent();
+          const text = [];
+          let calls = '';
+          const promptAcp = (promptText) => rec.client.prompt({sessionId:rec.agySessionId,text:promptText,signal:options.signal});
+          stage = 'session/prompt';
+          const source = promptAcp(payload.text);
+          for await (const chunk of bridge === undefined ? source : bridged(source, bridge, (feedback) => {
+            options.signal?.throwIfAborted();
+            return promptAcp(feedback);
+          })) {
+            if (chunk.type === 'text-delta') text.push(chunk.text);
+            if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call') calls += canonicalAnswer([chunk.block]);
+            if (chunk.type === 'finish' && chunk.reason.kind !== 'error' && chunk.reason.kind !== 'aborted' && text.join('') !== ACP_DENIED_ANSWER) {
+              if (generation === epoch && !stopped) {
+                map.set(key, {agySessionId:rec.agySessionId,model:options.model,workspaceDir,effort:options.reasoningEffort ?? null,bridgeKey,bridgeTag:bridge?.tag ?? null,
+                  syncedCount:(options.messages ?? []).length,lastFingerprint:fingerprint(options.messages ?? [],options.system),answerFingerprint:digest(text.join('') + calls)});
+                await save();
+                committed = true;
+                scheduleIdle(key,rec);
+              }
+            }
+            emitted = true;
+            yield chunk;
+          }
+          if (!committed && !emitted) throw new AgyCliError('Antigravity ACP ended without output', 'ACP_TRANSPORT');
+          break;
+        } catch (error) {
+          broken = error;
+          if (options.signal?.aborted) throw new AgyCliError('Antigravity ACP request cancelled', 'ABORTED');
+          if (emitted || !FALLBACK_CODES.has(error?.code)) throw error;
+          await close(key);
+          const promptBytes = measureCliPromptBytes(options, activeBridge);
+          const wouldForceCompaction = promptBytes > MAX_AGY_PROMPT_BYTES;
+          const detail = broken.acpDiagnostic ?? (broken.code === 'TIMEOUT' ? 'ACP request timed out' : 'no safe detail available');
+          if (wouldForceCompaction) {
+            if (attempt === 0 && SESSION_RETRY_STAGES.has(stage) && !stopped && generation === epoch && modeOf() === 'acp') {
+              warn(`Antigravity ACP failed on a long session (${broken.code}, stage=${stage}, ${detail}, session=${key.slice(0,12)}); retrying ACP on a fresh session instead of falling back to stream-json compaction`);
+              await debugLog({transport:'acp',retryAcp:true,reason:broken.code,stage,detail,promptBytes,session:key.slice(0,12)});
+              continue;
+            }
+            const message = `Antigravity ACP unavailable (${broken.code}, stage=${stage}, ${detail}, session=${key.slice(0,12)}); skipped stream-json fallback because full history (${promptBytes} bytes) exceeds the ${MAX_AGY_PROMPT_BYTES}-byte CLI ceiling and would force compaction.`;
+            warn(message);
+            await debugLog({transport:'acp',fallback:false,fallbackBlocked:'would-force-compaction',reason:broken.code,stage,detail,promptBytes,session:key.slice(0,12)});
+            throw new AgyCliError(message, broken.code, { acpDiagnostic: detail, stage, promptBytes });
+          }
+          shouldFallback = true;
+          break;
         }
-        emitted = true;
-        yield chunk;
       }
-      if (!committed && !emitted) throw new AgyCliError('Antigravity ACP ended without output', 'ACP_TRANSPORT');
-    } catch (error) {
-      broken = error;
-      if (options.signal?.aborted) throw new AgyCliError('Antigravity ACP request cancelled', 'ABORTED');
-      if (emitted || !FALLBACK_CODES.has(error?.code)) throw error;
-      shouldFallback = true;
     } finally {
       if (!committed) await close(key);
       active.delete(key);

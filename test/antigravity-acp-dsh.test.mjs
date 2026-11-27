@@ -218,30 +218,36 @@ if (needsElectron && process.env.DSH_NODE_EXECUTABLE) {
 		assert.equal(f.cli.length, 0);
 	});
 
-	test('ACP failure falls back through the CLI byte guard and real DSH recovery', options, async t => {
+	test('ACP transient failure on a long session retries ACP on a rebuilt session without forcing CLI compaction', options, async t => {
 		const f = await fixture(t, { recovery: true });
 		const fact = 'FACT=silver-orchid-1831';
 		const historical = `${'registro detalhado de teste ó.\n'.repeat(2_850)}`;
 		await f.seed([`${fact}\n${historical}`, `Older turn\n${historical}`]);
-		f.setAnswer(async () => { throw new AgyCliError('fixture disconnected before output', 'ACP_TRANSPORT'); });
+		let attempts = 0;
+		f.setAnswer(async ({ text }) => {
+			attempts += 1;
+			if (attempts === 1) throw new AgyCliError('fixture disconnected before output', 'ACP_TRANSPORT');
+			return `ACP-RECOVERED: ${lastLine(text)}`;
+		});
 		const current = `CURRENT=guarded-fig-4016\n${'dados do pedido atual. '.repeat(450)}guarded-fig-4016`;
-		assert.match(await f.completed(current), /^CLI: .*guarded-fig-4016$/u);
-		assert.deepEqual(f.failures.map(error => error.code), ['ANTIGRAVITY_PROMPT_TOO_LARGE']);
-		assert.match(f.failures[0].message, /Nothing was sent/u);
-		assert.deepEqual(f.calls.map(call => call.purpose), [undefined, 'compaction', undefined]);
-		assert.equal(f.fallback.length, 3, 'initial refusal, native summary, bounded retry');
-		assert.equal(f.cli.length, 2, 'the byte guard never spawns for the oversized turn');
-		assert.ok(f.cli.every(text => Buffer.byteLength(text) <= MAX_AGY_PROMPT_BYTES));
-		assert.match(f.cli[0], /acting as a compaction engine/u);
-		assert.doesNotMatch(f.cli[0], /CURRENT=guarded-fig-4016/u);
-		assert.ok(f.cli[1].includes(current), 'guarded retry preserves the active request verbatim');
-		assert.ok(f.cli[1].includes(fact), 'guarded retry keeps the summarized fact');
-		assert.equal(f.acp.length, 1, 'the DSH retry stays on the CLI after ACP failed');
+		assert.match(await f.completed(current), /^ACP-RECOVERED: .*guarded-fig-4016$/u);
+		assert.deepEqual(f.failures, [], 'no ANTIGRAVITY_PROMPT_TOO_LARGE compaction triggered');
+		assert.equal(f.fallback.length, 0, 'never fell back to stream-json on a long session');
+		assert.equal(f.cli.length, 0);
+		assert.equal(f.acp.length, 2, 'initial failed attempt + fresh rebuilt ACP session');
+		assert.ok(f.warnings.some(message => message.includes('retrying ACP on a fresh session')));
+	});
+
+	test('ACP failure on a short session still falls back to stream-json without compaction', options, async t => {
+		const f = await fixture(t, { recovery: true });
+		f.setAnswer(async () => { throw new AgyCliError('fixture disconnected before output', 'ACP_TRANSPORT'); });
+		assert.equal(await f.completed('SHORT=fallback-ok'), 'CLI: SHORT=fallback-ok');
+		assert.equal(f.fallback.length, 1);
+		assert.equal(f.cli.length, 1);
 		assert.equal(f.warnings.filter(message => message.includes('using stream-json')).length, 1);
 		f.setAnswer(async () => 'ACP restored on the next turn');
 		assert.equal(await f.completed('NEXT=unpin-2186'), 'ACP restored on the next turn');
 		assert.equal(f.acp.length, 2);
-		assert.equal(f.cli.length, 2);
 	});
 
 	test('mode changes apply to the same live DSH agent without leaking stale ACP history', options, async t => {
