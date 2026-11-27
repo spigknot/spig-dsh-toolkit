@@ -143,13 +143,72 @@ function unfence(body) {
 	return match === null ? body : match[1].trim();
 }
 
+/**
+ * Find the end index (exclusive) of the first balanced JSON object `{...}` in
+ * `text`, respecting JSON strings and escapes. Returns -1 if `text` does not
+ * start with `{` or never balances.
+ */
+function findBalancedObjectEnd(text) {
+	if (!text.startsWith('{')) return -1;
+	let depth = 0;
+	let inString = false;
+	let escaped = false;
+	for (let i = 0; i < text.length; i += 1) {
+		const ch = text[i];
+		if (inString) {
+			if (escaped) escaped = false;
+			else if (ch === '\\') escaped = true;
+			else if (ch === '"') inString = false;
+		} else if (ch === '"') {
+			inString = true;
+		} else if (ch === '{') {
+			depth += 1;
+		} else if (ch === '}') {
+			depth -= 1;
+			if (depth === 0) return i + 1;
+		}
+	}
+	return -1;
+}
+
+/**
+ * Parse a JSON block, tolerating stray trailing `}` characters only when the
+ * prefix up to the first balanced `{...}` is valid JSON and everything after
+ * it is whitespace or `}`.
+ */
+function parseJsonBlock(trimmed) {
+	try {
+		return { parsed: JSON.parse(trimmed) };
+	} catch (firstError) {
+		const end = findBalancedObjectEnd(trimmed);
+		if (end > 0 && end < trimmed.length && /^[\s}]+$/u.test(trimmed.slice(end))) {
+			try {
+				return { parsed: JSON.parse(trimmed.slice(0, end)) };
+			} catch {
+				// Fall through and report the original parse error.
+			}
+		}
+		return { error: firstError };
+	}
+}
+
+/** Extract a short JSON-escaped window around a V8 `at position N` parse error. */
+function extractPositionSnippet(text, message) {
+	const match = /\bat position (\d+)\b/u.exec(String(message ?? ''));
+	if (match === null) return undefined;
+	const pos = Number(match[1]);
+	if (!Number.isInteger(pos) || pos < 0 || pos > text.length) return undefined;
+	const start = Math.max(0, pos - 40);
+	const end = Math.min(text.length, pos + 40);
+	return JSON.stringify(text.slice(start, end));
+}
+
 function parseBlock(body, allowedTools) {
 	const trimmed = unfence(body.trim());
-	let parsed;
-	try {
-		parsed = JSON.parse(trimmed);
-	} catch (error) {
-		return { reason: `invalid JSON: ${error.message}` };
+	const { parsed, error } = parseJsonBlock(trimmed);
+	if (error !== undefined) {
+		const snippet = extractPositionSnippet(trimmed, error.message);
+		return { reason: `invalid JSON: ${error.message}`, ...(snippet ? { snippet } : {}) };
 	}
 	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { reason: 'the block is not a JSON object' };
 	if (typeof parsed.name !== 'string' || parsed.name.length === 0) return { reason: 'missing "name"' };
@@ -199,9 +258,9 @@ export function parseToolBridgeOutput(raw, tag, allowedTools) {
 		cursor = end < 0 ? text.length : end + close.length;
 		if (body.trim().length === 0) continue;
 		blocks += 1;
-		const { call, reason } = parseBlock(body, allowed);
+		const { call, reason, snippet } = parseBlock(body, allowed);
 		if (call !== undefined) calls.push(call);
-		else invalid.push({ reason, body: body.trim().slice(0, 300) });
+		else invalid.push({ reason, body: body.trim().slice(0, 300), ...(snippet ? { snippet } : {}) });
 	}
 	if (blocks === 0) return { text, calls, invalid, droppedTrailing: 0 };
 	if (calls.length === 0) return { text: [...before, tail].join('').trim(), calls, invalid, droppedTrailing: 0 };
@@ -264,7 +323,9 @@ export function canonicalAnswer(content) {
 
 /** Feedback for a reply whose every bridge block was invalid (one corrective retry). */
 export function invalidCallFeedback(tag, invalid) {
-	const reasons = invalid.map((entry) => `- ${entry.reason}`).join('\n');
+	const reasons = invalid
+		.map((entry) => (entry.snippet ? `- ${entry.reason} (near: ${entry.snippet})` : `- ${entry.reason}`))
+		.join('\n');
 	return `Your previous reply tried to call a tool, but no block was valid:\n${reasons}\nWrite the call again exactly as <${tag}>{"name":"TOOL_NAME","arguments":{...}}</${tag}> with a tool from the list and strict JSON, or answer without a tool.`;
 }
 

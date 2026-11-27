@@ -5,6 +5,7 @@ import {
 	forgetBridgeTag,
 	serializeToolsCompact,
 	bridgeHeader,
+	invalidCallFeedback,
 	parseToolBridgeOutput,
 	shouldBridge
 } from '../components/subscriptions/lib/antigravity-tool-bridge.js';
@@ -162,4 +163,59 @@ test('a fenced json body, missing arguments, stringified arguments and an unclos
 	const unclosed = parseToolBridgeOutput(`Reading.\n<${tag}>{"name":"read","arguments":{"file_path":"z"}}`, tag, allowed);
 	assert.equal(unclosed.calls.length, 1);
 	assert.equal(unclosed.text, 'Reading.');
+});
+
+test('stray trailing closing braces after a complete JSON object are tolerated without altering arguments', () => {
+	const tag = bridgeTag('p7');
+	const withCloseTag = parseToolBridgeOutput(
+		`<${tag}>{"name":"read","arguments":{"file_path":"doc.md","content":"braces } inside \\"string\\""}}}</${tag}>`,
+		tag,
+		allowed
+	);
+	assert.equal(withCloseTag.calls.length, 1);
+	assert.equal(withCloseTag.invalid.length, 0);
+	assert.deepEqual(JSON.parse(withCloseTag.calls[0].arguments), {
+		file_path: 'doc.md',
+		content: 'braces } inside "string"'
+	});
+
+	const unclosedExtra = parseToolBridgeOutput(
+		`<${tag}>{"name":"read","arguments":{"file_path":"big.md"}}}}`,
+		tag,
+		allowed
+	);
+	assert.equal(unclosedExtra.calls.length, 1);
+	assert.equal(unclosedExtra.invalid.length, 0);
+	assert.deepEqual(JSON.parse(unclosedExtra.calls[0].arguments), { file_path: 'big.md' });
+});
+
+test('non-brace trailing content or a second glued object is still rejected', () => {
+	const tag = bridgeTag('p8');
+	const glued = parseToolBridgeOutput(
+		`<${tag}>{"name":"read","arguments":{"file_path":"a"}}{"name":"read","arguments":{"file_path":"b"}}</${tag}>`,
+		tag,
+		allowed
+	);
+	assert.equal(glued.calls.length, 0);
+	assert.equal(glued.invalid.length, 1);
+
+	const junk = parseToolBridgeOutput(
+		`<${tag}>{"name":"read","arguments":{"file_path":"a"}} extra text</${tag}>`,
+		tag,
+		allowed
+	);
+	assert.equal(junk.calls.length, 0);
+	assert.equal(junk.invalid.length, 1);
+});
+
+test('invalidCallFeedback includes a positional snippet when JSON.parse fails deep inside a large payload', () => {
+	const tag = bridgeTag('p9');
+	const pad = 'a'.repeat(500);
+	const bad = '<' + tag + '>{"name":"read","arguments":{"file_path":"' + pad + 'onWarn(\\xboom)' + pad + '"}}</' + tag + '>';
+	const parsed = parseToolBridgeOutput(bad, tag, allowed);
+	assert.equal(parsed.calls.length, 0);
+	assert.equal(parsed.invalid.length, 1);
+	const feedback = invalidCallFeedback(tag, parsed.invalid);
+	assert.match(feedback, /near:/u);
+	assert.match(feedback, /onWarn/u);
 });
