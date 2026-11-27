@@ -274,6 +274,28 @@ test('permission callbacks allow only coherent in-root real files, never paths i
 	assert.deepEqual(chunks[1], { type: 'text-delta', index: 0, text: ACP_DENIED_ANSWER });
 });
 
+test('denyNativeTools rejects even coherent in-root read_file calls so bridged turns stay on DSH tools', async (t) => {
+	const workspaceDir = path.resolve('fake-workspace');
+	const clean = path.join(workspaceDir, 'notes.md');
+	let finish;
+	const fx = fake(t, withSession((request, io) => {
+		if (request.method === 'session/prompt') {
+			finish = () => io.reply(request, {});
+			io.receive({ id: 'ask-read', method: 'session/request_permission', params: { sessionId: 's', toolCall: readCall(clean), options: permissionOptions } });
+		} else finish();
+	}), {
+		workspaceDir,
+		denyNativeTools: true,
+		realpath: async (file) => file,
+		stat: async () => ({ isFile: () => true }),
+	});
+	await fx.client.initialize();
+	await fx.client.newSession();
+	const chunks = await collect(fx.client.prompt({ sessionId: 's', text: 'read notes.md' }));
+	assert.equal(fx.sent.find(m => m.id === 'ask-read').result.outcome.optionId, 'no');
+	assert.equal(chunks.find(c => c.type === 'text-delta')?.text, ACP_DENIED_ANSWER);
+});
+
 test('denies a permission without a reject_once option using cancelled', async (t) => {
 	let finish;
 	const fx = fake(t, withSession((request, io) => {

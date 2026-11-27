@@ -235,3 +235,39 @@ test('oversized parallel tool results in an incremental ACP step spill to contex
 	assert.equal(saved.split('\n').slice(Number(start) - 1, Number(end)).join('\n'), bigContent);
 	assert.equal(step2.at(-1).reason.kind, 'stop');
 });
+
+test('ACP transport sets denyNativeTools and denies read_file(*) in settings.json when bridge is active, and allows it when bridge is off', async (t) => {
+	for (const bridgeOn of [true, false]) {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), `spig-acp-policy-${bridgeOn ? 'on' : 'off'}-`));
+		const seen = [];
+		const transport = createAcpTransport({
+			root,
+			modeOf: () => 'acp',
+			bridgeEnabledOf: () => bridgeOn,
+			fallback: async function* () { throw new Error('fallback must not run'); },
+			clientFactory: (opts) => {
+				seen.push(opts);
+				return {
+					alive: true,
+					async initialize() {},
+					async newSession() { return 'agy-1'; },
+					async loadSession() { return true; },
+					async *prompt() { yield* textChunks('ok'); },
+					dispose() { this.alive = false; },
+				};
+			},
+		});
+		t.after(async () => { await transport.disposeAll(); await fs.rm(root, { recursive: true, force: true }); });
+		await collect(transport.stream({ sessionId: `dsh-policy-${bridgeOn}`, model: 'gemini-3-flash', messages: [ask('hi')], tools }));
+		assert.equal(seen.length, 1);
+		assert.equal(seen[0].denyNativeTools, bridgeOn);
+		const settings = JSON.parse(await fs.readFile(path.join(seen[0].stateDir, 'antigravity-cli', 'spig-acp', 'settings.json'), 'utf8'));
+		if (bridgeOn) {
+			assert.deepEqual(settings.permissions.allow, []);
+			assert.ok(settings.permissions.deny.includes('read_file(*)'));
+		} else {
+			assert.deepEqual(settings.permissions.allow, ['read_file(*)']);
+			assert.ok(!settings.permissions.deny.includes('read_file(*)'));
+		}
+	}
+});

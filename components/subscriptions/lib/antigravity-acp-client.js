@@ -82,7 +82,7 @@ export function createAcpClient({
 	bin = process.env.DSH_AGY_BIN?.trim() || 'agy', startupTimeoutMs = 30_000,
 	turnTimeoutMs = 180_000, turnMaxMs = 15 * 60_000, shutdownGraceMs = 250, realpath = fsRealpath, stat = fsStat,
 	platform = process.platform, killTree = (child) => forceProcessTree(child, platform),
-	onWarn = () => {},
+	denyNativeTools = false, onWarn = () => {},
 }) {
 	const cwd = path.resolve(contextDir);
 	const readRoots = [...new Set([...(workspaceDir ? [path.resolve(workspaceDir)] : []), cwd])];
@@ -135,6 +135,7 @@ export function createAcpClient({
 	}
 
 	async function canRead(tool) {
+		if (denyNativeTools) return false;
 		if (tool?.name !== 'read_file' || tool.kind !== 'read' || !Array.isArray(tool.locations) || tool.locations.length !== 1) return false;
 		const target = safePath(tool.rawInput?.Path);
 		if (!target || safePath(tool.args?.Path) !== target || safePath(tool.locations[0]?.path) !== target) return false;

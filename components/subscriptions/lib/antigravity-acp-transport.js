@@ -107,7 +107,7 @@ async function atomicWrite(file, obj) {
 // The installed ACP does not accept --settings. Use the tested isolated config
 // and mandatory permission callback. No workspace config, credentials, or
 // personal settings are copied into it. Never run in auto/accept-edits mode.
-async function preparePolicy(root, key) {
+async function preparePolicy(root, key, { denyNativeTools = false } = {}) {
   await ensureDir(root);
   const privateDir = path.join(root, key);
   await ensureDir(privateDir);
@@ -119,10 +119,10 @@ async function preparePolicy(root, key) {
   const profileDir = path.join(agyDir, 'spig-acp');
   await ensureDir(agyDir);
   await ensureDir(profileDir);
-  await atomicWrite(path.join(profileDir, 'settings.json'), {
-    toolPermission:'strict',
-    permissions:{allow:['read_file(*)'],deny:['write_file(*)','command(*)','execute_url(*)','download_url(*)','mcp(*)','read_url(*)']}
-  });
+  const permissions = denyNativeTools
+    ? { allow: [], deny: ['read_file(*)', 'write_file(*)', 'command(*)', 'execute_url(*)', 'download_url(*)', 'mcp(*)', 'read_url(*)'] }
+    : { allow: ['read_file(*)'], deny: ['write_file(*)', 'command(*)', 'execute_url(*)', 'download_url(*)', 'mcp(*)', 'read_url(*)'] };
+  await atomicWrite(path.join(profileDir, 'settings.json'), { toolPermission: 'strict', permissions });
   return {contextDir,stateDir};
 }
 
@@ -245,8 +245,9 @@ export function createAcpTransport({
           rec = live.get(key);
           if (rec && (!rec.client.alive || !incremental)) { await close(key); rec = undefined; }
           if (!rec) {
+            const denyNativeTools = bridge !== undefined;
             let dirs;
-            try { dirs = await preparePolicy(root,key); }
+            try { dirs = await preparePolicy(root, key, { denyNativeTools }); }
             catch { throw new AgyCliError('Antigravity ACP private policy could not be prepared', 'ACP_TRANSPORT'); }
             assertCurrent();
             if (live.size >= maxProcesses) {
@@ -255,7 +256,7 @@ export function createAcpTransport({
               await close(idle);
               assertCurrent();
             }
-            const client = clientFactory({...dirs,workspaceDir,startupTimeoutMs,turnTimeoutMs,onWarn:warn});
+            const client = clientFactory({...dirs,workspaceDir,startupTimeoutMs,turnTimeoutMs,denyNativeTools,onWarn:warn});
             rec = {client,...dirs};
             live.set(key,rec);
             stage = 'initialize';
