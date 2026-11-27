@@ -21,10 +21,13 @@ Plugin modular para o DeepSeek Harness (DSH) que centraliza os plugins `spig-dsh
 ## Desenvolvimento
 
 ```powershell
-node scripts/build.mjs
-node --check lib/index.js
-node --check lib/client.js
-node --test test/*.test.mjs
+npm run hooks:install       # ativa o pre-commit hook (.githooks/pre-commit)
+npm run build               # reconstrói lib/client.js (UI)
+npm run check               # valida sintaxe e imports da rota Antigravity
+npm test                    # roda toda a suíte de testes
+npm run diagnose:antigravity -- <session-id>  # resumo read-only de incidentes
 ```
 
-Consulte [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) para detalhes da arquitetura e instruções para adicionar novos componentes.
+> **Nota (Windows / DSH):** se o ambiente herdado definir `GIT_CONFIG_COUNT` sem chaves correspondentes, prefixe comandos `git` com `$env:GIT_CONFIG_COUNT='0'`.
+
+Consulte [AGENTS.md](AGENTS.md) para procedimentos operacionais e [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) para detalhes da arquitetura.

@@ -40,8 +40,10 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "check": "node --check lib/index.js && node --check lib/client.js",
-    "test": "node --test test/*.test.mjs"
+    "check": "node scripts/check.mjs",
+    "test": "node --test test/*.test.mjs",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "diagnose:antigravity": "node scripts/diagnose-antigravity.mjs"
   },
   "dependencies": {
     "@deepseek-ai/schemastery": "^3.18.3",
