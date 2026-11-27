@@ -2,7 +2,7 @@
  * Read-only diagnostic summary for Antigravity route incidents.
  *
  * Usage:
- *   node scripts/diagnose-antigravity.mjs [session-id-or-substring]
+ *   node scripts/diagnose-antigravity.mjs [session-id-or-substring] [--check-live]
  *
  * Never prints prompts, user messages, tool contents, or credentials.
  */
@@ -11,11 +11,15 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { zstdDecompressSync } from 'node:zlib';
+import { computeCodeFingerprint } from '../components/subscriptions/lib/lifecycle-journal.js';
 
 const dshHome = process.env.DSH_HOME?.trim() || join(homedir(), '.dsh');
 const subDir = join(dshHome, 'plugins', 'subscriptions');
 const acpRoot = join(subDir, 'agy-acp');
-const query = process.argv[2]?.trim() || '';
+const rawArgs = process.argv.slice(2);
+const checkLive = rawArgs.includes('--check-live');
+const query = rawArgs.find((a) => !a.startsWith('--'))?.trim() || '';
+const diskFingerprint = computeCodeFingerprint();
 
 function safeReadJsonl(file, tail = 10) {
 	if (!existsSync(file)) return [];
@@ -54,6 +58,7 @@ function findSessionFile(sessionsDir, needle) {
 
 console.log('=== Antigravity Route Diagnostic (read-only) ===');
 console.log(`DSH_HOME: ${dshHome}`);
+console.log(`Disk code fingerprint: ${diskFingerprint.packageVersion}/${diskFingerprint.combined}`);
 console.log(`agy-debug.flag: ${existsSync(join(subDir, 'agy-debug.flag'))}`);
 
 // 1. Always-on lifecycle journal
@@ -186,5 +191,25 @@ if (sessionFile) {
 		}
 	} catch (err) {
 		console.log(`  could not decode session.v4.jsonl.zstd (${err.message})`);
+	}
+}
+
+if (checkLive) {
+	const withCode = lifecycleEvents.filter((ev) => ev.code?.combined);
+	const liveEvent = [...withCode].reverse().find((ev) => !String(ev.event ?? '').endsWith('unmount')) ?? withCode.at(-1);
+	const diskTag = `${diskFingerprint.packageVersion}/${diskFingerprint.combined}`;
+	if (!liveEvent) {
+		console.log(`
+LIVE PARITY: UNKNOWN (no lifecycle entries with code fingerprint; disk=${diskTag})`);
+		process.exit(2);
+	}
+	const liveTag = `${liveEvent.code.packageVersion}/${liveEvent.code.combined}`;
+	if (liveTag === diskTag) {
+		console.log(`
+LIVE PARITY: OK (live=${liveTag} matches disk, event=${liveEvent.event}, pid=${liveEvent.pid ?? '?'})`);
+	} else {
+		console.log(`
+LIVE PARITY: DRIFT (live=${liveTag} != disk=${diskTag}; restart supervisor dsh-navegador.mjs)`);
+		process.exit(1);
 	}
 }

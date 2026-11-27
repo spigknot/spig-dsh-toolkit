@@ -4,6 +4,9 @@
   "description": "Modular DeepSeek Harness plugin unifying Subscriptions, Thinking Provider, and General Configs (Sidebar Bottom, Session Search, Windows Autostart, Compaction) with independent component toggles.",
   "license": "MIT",
   "type": "module",
+  "engines": {
+    "node": ">=22.15.0"
+  },
   "icon": "./icon.svg",
   "main": "./lib/index.js",
   "exports": {
@@ -41,7 +44,7 @@
   "scripts": {
     "build": "node scripts/build.mjs",
     "check": "node scripts/check.mjs",
-    "test": "node --test test/*.test.mjs",
+    "test": "node scripts/run-tests.mjs",
     "hooks:install": "node scripts/install-hooks.mjs",
     "diagnose:antigravity": "node scripts/diagnose-antigravity.mjs"
   },

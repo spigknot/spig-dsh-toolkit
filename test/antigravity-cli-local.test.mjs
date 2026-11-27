@@ -274,6 +274,8 @@ test('the opt-in journal records what was sent and what came back', async () => 
 		stdout.end('{"event":"result","result":{"status":"SUCCESS","response":"resposta de teste"}}\n');
 		child.emit('close', 0);
 	});
+	const prevDebug = process.env.DSH_AGY_DEBUG;
+	const prevLog = process.env.DSH_AGY_DEBUG_LOG;
 	process.env.DSH_AGY_DEBUG = '1';
 	process.env.DSH_AGY_DEBUG_LOG = log;
 	try {
@@ -287,8 +289,10 @@ test('the opt-in journal records what was sent and what came back', async () => 
 		assert.equal(line.responseHead, 'resposta de teste');
 		assert.ok(line.ms >= 0);
 	} finally {
-		delete process.env.DSH_AGY_DEBUG;
-		delete process.env.DSH_AGY_DEBUG_LOG;
+		if (prevDebug === undefined) delete process.env.DSH_AGY_DEBUG;
+		else process.env.DSH_AGY_DEBUG = prevDebug;
+		if (prevLog === undefined) delete process.env.DSH_AGY_DEBUG_LOG;
+		else process.env.DSH_AGY_DEBUG_LOG = prevLog;
 		await rm(log, { force: true });
 	}
 });
@@ -384,14 +388,18 @@ test('without the switch the journal stays silent', async () => {
 		stdout.end('{"event":"result","result":{"status":"SUCCESS","response":"ok"}}\n');
 		child.emit('close', 0);
 	});
+	const prevDebug = process.env.DSH_AGY_DEBUG;
+	const prevLog = process.env.DSH_AGY_DEBUG_LOG;
 	process.env.DSH_AGY_DEBUG = '0';
 	process.env.DSH_AGY_DEBUG_LOG = log;
 	try {
 		await createAgy({ spawn, bin: 'agy-under-test' }).run({ model: 'gemini-4-hydrogen', messages: [{ role: 'user', content: [{ type: 'text', text: 'x' }] }] });
 		assert.equal(existsSync(log), false);
 	} finally {
-		delete process.env.DSH_AGY_DEBUG;
-		delete process.env.DSH_AGY_DEBUG_LOG;
+		if (prevDebug === undefined) delete process.env.DSH_AGY_DEBUG;
+		else process.env.DSH_AGY_DEBUG = prevDebug;
+		if (prevLog === undefined) delete process.env.DSH_AGY_DEBUG_LOG;
+		else process.env.DSH_AGY_DEBUG_LOG = prevLog;
 	}
 });
 

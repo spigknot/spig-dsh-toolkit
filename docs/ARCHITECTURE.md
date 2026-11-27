@@ -23,7 +23,7 @@ spig-dsh-toolkit/
 │   ├── components/
 │   │   ├── subscriptions.js        # Definição do componente Subscriptions
 │   │   ├── thinking-provider.js    # Definição do componente Thinking Provider
-│   │   ├── general-configs.js      # Definição do componente General Configs (defaultEnabled: false)
+│   │   ├── general-configs.js      # Definição do componente General Configs (host sempre montado em lib/index.js; sub-toggles false por padrão)
 │   │   └── general-configs/        # Store atômico, Windows Startup (3080) e RPC /api/spig-general.*
 │   └── client/
 │       ├── toolkit-client.js       # UI de Settings + Plugins detail (plugins.bundle.config) + orquestrador

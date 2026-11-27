@@ -6,9 +6,10 @@
  *    exports or broken relative imports fail immediately.
  */
 import { execFileSync } from 'node:child_process';
-import { readdirSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { buildClientBundle } from './build.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -35,6 +36,8 @@ const syntaxTargets = [
 	),
 	join(ROOT, 'components', 'subscriptions', 'lib', 'translate', 'anthropic.js'),
 	join(ROOT, 'components', 'subscriptions', 'lib', 'providers', 'rate-limit.js'),
+	...collectJsFiles(join(ROOT, 'components', 'general-configs', 'autostart')),
+	...collectJsFiles(join(ROOT, 'components', 'thinking-provider', 'lib')),
 ];
 
 for (const file of syntaxTargets) {
@@ -59,4 +62,11 @@ for (const rel of importTargets) {
 	await import(pathToFileURL(join(ROOT, rel)).href);
 }
 
-console.log(`check ok: ${syntaxTargets.length} syntax-checked, ${importTargets.length} route modules imported (${relative(ROOT, ROOT) || '.'}).`);
+const expectedClient = buildClientBundle();
+const actualClient = readFileSync(join(ROOT, 'lib', 'client.js'), 'utf8');
+if (actualClient !== expectedClient) {
+	console.error('check failed: lib/client.js is out of sync with client sources. Run "npm run build" to regenerate it.');
+	process.exit(1);
+}
+
+console.log(`check ok: ${syntaxTargets.length} syntax-checked, ${importTargets.length} route modules imported, lib/client.js parity verified (${relative(ROOT, ROOT) || '.'}).`);
