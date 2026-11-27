@@ -49,6 +49,7 @@ const importTargets = [
 	'components/subscriptions/lib/antigravity-cli-local.js',
 	'components/subscriptions/lib/antigravity-cli-recovery.js',
 	'components/subscriptions/lib/antigravity-context-delivery.js',
+	'components/subscriptions/lib/antigravity-timeouts.js',
 	'components/subscriptions/lib/antigravity-tool-bridge.js',
 	'components/subscriptions/lib/compaction-model.js',
 	'components/subscriptions/lib/lifecycle-journal.js',

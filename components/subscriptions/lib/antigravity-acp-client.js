@@ -2,6 +2,7 @@ import { spawn as nodeSpawn } from 'node:child_process';
 import { realpath as fsRealpath, stat as fsStat } from 'node:fs/promises';
 import path from 'node:path';
 import { AgyCliError, classifyFailure } from './antigravity-cli-local.js';
+import { ANTIGRAVITY_TIMEOUTS, formatTimeoutDiagnostic } from './antigravity-timeouts.js';
 
 const MIN_CLI_VERSION = [1, 5, 17];
 /** CLI versions whose ACP behavior was actually probed (initialize → prompt → load with replay). */
@@ -79,8 +80,8 @@ function failure(detail, code = 'ACP_TRANSPORT') {
 /** One private, version-gated ACP process. The caller must prepare its strict settings overlay first. */
 export function createAcpClient({
 	workspaceDir, contextDir, stateDir, spawn = nodeSpawn,
-	bin = process.env.DSH_AGY_BIN?.trim() || 'agy', startupTimeoutMs = 30_000,
-	turnTimeoutMs = 180_000, turnMaxMs = 15 * 60_000, shutdownGraceMs = 250, realpath = fsRealpath, stat = fsStat,
+	bin = process.env.DSH_AGY_BIN?.trim() || 'agy', startupTimeoutMs = ANTIGRAVITY_TIMEOUTS.startupMs,
+	turnTimeoutMs = ANTIGRAVITY_TIMEOUTS.acpIdleMs, turnMaxMs = ANTIGRAVITY_TIMEOUTS.acpTotalMaxMs, shutdownGraceMs = 250, realpath = fsRealpath, stat = fsStat,
 	platform = process.platform, killTree = (child) => forceProcessTree(child, platform),
 	denyNativeTools = false, onWarn = () => {},
 }) {
@@ -233,7 +234,7 @@ export function createAcpClient({
 			const onAbort = () => stop(aborted(), true);
 			const expire = (kind) => {
 				const error = failure(`${stderr}\nAntigravity ACP ${method} timed out`, 'TIMEOUT');
-				error.acpDiagnostic = `${method} ${kind} timeout${diagnostic ? `; ${diagnostic()}` : ''}`;
+				error.acpDiagnostic = diagnostic ? diagnostic(kind) : `${method} ${kind} timeout`;
 				stop(error, true);
 			};
 			// `timeoutMs` is an idle limit when `refresh` is used; `maxMs` caps the whole call.
@@ -352,7 +353,7 @@ export function createAcpClient({
 		}, {
 			maxMs: turnMaxMs,
 			onStart: (id) => { current.requestId = id; },
-			diagnostic: () => `${current.updates} update(s), last ${Math.round((Date.now() - current.lastActivity) / 1000)}s ago, ${Math.round((Date.now() - startedAt) / 1000)}s total`,
+			diagnostic: (kind) => formatTimeoutDiagnostic({ method: 'session/prompt', kind, updates: current.updates, lastActivityAt: current.lastActivity, startedAt }),
 		}).then((result) => current.push({ result }), (error) => current.push({ error }));
 		let answer = '', leading = '';
 		let block, index = 0;

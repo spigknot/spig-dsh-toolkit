@@ -18,6 +18,7 @@ import { existsSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { bridgeHeader, bridgeTag, serializeToolsCompact, shouldBridge } from './antigravity-tool-bridge.js';
+import { ANTIGRAVITY_TIMEOUTS, formatTimeoutDiagnostic } from './antigravity-timeouts.js';
 
 /**
  * Permission resources granted to the Antigravity engine: file reads and web
@@ -524,9 +525,12 @@ function hasResultLine(stdout) {
  */
 function runProcess(spawn, args, { signal, cwd, timeoutMs, stdin, doneWhen }) {
 	return new Promise((resolve, reject) => {
+		const startedAt = Date.now();
 		const child = spawn(args[0], args.slice(1), { cwd, shell: false, windowsHide: true, stdio: [stdin === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
 		let stdout = '';
 		let stderr = '';
+		let chunks = 0;
+		let lastActivityAt = startedAt;
 		let settled = false;
 		let timer;
 		const finish = (fn, value) => {
@@ -547,12 +551,15 @@ function runProcess(spawn, args, { signal, cwd, timeoutMs, stdin, doneWhen }) {
 		signal?.addEventListener('abort', abort, { once: true });
 		timer = setTimeout(() => {
 			child.kill();
-			finish(reject, new AgyCliError(`Antigravity CLI exceeded ${Math.round(timeoutMs / 1000)}s`, 'TIMEOUT'));
+			const diagnostic = formatTimeoutDiagnostic({ method: 'stream-json', kind: 'total', updates: chunks, lastActivityAt, startedAt });
+			finish(reject, new AgyCliError(`Antigravity CLI exceeded ${Math.round(timeoutMs / 1000)}s (${diagnostic})`, 'TIMEOUT', { acpDiagnostic: diagnostic }));
 		}, timeoutMs);
 		timer.unref?.();
 		child.stdout?.setEncoding?.('utf8');
 		child.stderr?.setEncoding?.('utf8');
 		child.stdout?.on('data', (chunk) => {
+			chunks += 1;
+			lastActivityAt = Date.now();
 			stdout += chunk;
 			if (!settled && doneWhen?.(stdout)) {
 				finish(resolve, { stdout, stderr });
@@ -634,7 +641,7 @@ function parseStreamResult(stdout) {
  * @param options - spawn implementation, binary name, time limits, and the
  *   route-fix reader; injectable for tests.
  */
-export function createAgy({ spawn = nodeSpawn, bin = defaultBin(), timeoutMs = 60 * 60_000, modelsTimeoutMs = 60_000, fixOf = () => agyFixEnabled, guardOf = () => agyGuardEnabled, bridgeOf = () => agyBridgeEnabled, catalogMaxBytes } = {}) {
+export function createAgy({ spawn = nodeSpawn, bin = defaultBin(), timeoutMs = ANTIGRAVITY_TIMEOUTS.cliTotalMaxMs, modelsTimeoutMs = ANTIGRAVITY_TIMEOUTS.auxiliaryMs, fixOf = () => agyFixEnabled, guardOf = () => agyGuardEnabled, bridgeOf = () => agyBridgeEnabled, catalogMaxBytes } = {}) {
 	let listed;
 	let listedAt = 0;
 	async function listModels({ signal } = {}) {

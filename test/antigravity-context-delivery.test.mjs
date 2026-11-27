@@ -209,3 +209,59 @@ test('a rebuilt session offloads tool results from earlier steps of the same age
 	assert.match(result.text, /inspect the three files/u, 'the request stays inline');
 	assert.match(result.text, /with the read tool/u);
 });
+
+test('deterministic budget matrix: varied multi-turn and multi-step agentic conversations always stay within limitBytes', async (t) => {
+	const { deliverAcpContext } = await import('../components/subscriptions/lib/antigravity-context-delivery.js');
+	const bridge = { tag: 'dsh_tc_abcdef012345', header: 'Tool protocol\n' + 'h'.repeat(300), names: ['read', 'grep', 'pwsh'] };
+	let seed = 0x51a7c0de;
+	const nextInt = (max) => {
+		seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+		return seed % max;
+	};
+	const makePayload = (size, tag) => {
+		const unit = `${tag}-éç🚀-0123456789\n`;
+		return unit.repeat(Math.max(1, Math.ceil(size / Buffer.byteLength(unit, 'utf8')))).slice(0, size);
+	};
+
+	const limitBytes = 6_000;
+	let checked = 0;
+	for (let trial = 0; trial < 36; trial += 1) {
+		const contextDir = await tempContext(t);
+		const incremental = trial % 3 === 0;
+		const useBridge = trial % 2 === 0;
+		const system = trial % 4 === 0 ? `System instructions: ${'s'.repeat(400)}` : undefined;
+		const priorTurns = incremental ? 0 : nextInt(5);
+		const activeSteps = 1 + nextInt(4);
+		const messages = [];
+		for (let p = 0; p < priorTurns; p += 1) {
+			messages.push(user(`Prior ask ${p}: ${makePayload(200 + nextInt(2200), `u${p}`)}`));
+			messages.push(assistant(`Prior reply ${p}: ${makePayload(200 + nextInt(2200), `a${p}`)}`));
+		}
+		const marker = `ACTIVE-REQUEST-${trial}`;
+		messages.push(user(`Investigate ${marker}`));
+		for (let step = 0; step < activeSteps; step += 1) {
+			const resultsInStep = 1 + nextInt(3);
+			const calls = [];
+			for (let r = 0; r < resultsInStep; r += 1) {
+				calls.push({ type: 'tool-call', id: `call_${trial}_${step}_${r}`, name: 'read', arguments: JSON.stringify({ file_path: `f_${step}_${r}.js` }) });
+			}
+			messages.push(assistant(calls));
+			for (let r = 0; r < resultsInStep; r += 1) {
+				const large = nextInt(2) === 1;
+				const body = makePayload(large ? 1500 + nextInt(4000) : 40 + nextInt(200), `t${step}_${r}`);
+				messages.push({ role: 'tool', toolCallId: calls[r].id, content: [{ type: 'text', text: body }] });
+			}
+		}
+		const delivered = await deliverAcpContext({ messages, system }, {
+			contextDir,
+			incremental,
+			limitBytes,
+			bridge: useBridge ? bridge : undefined,
+		});
+		const bytes = Buffer.byteLength(delivered.text, 'utf8');
+		assert.ok(bytes <= limitBytes, `trial ${trial} exceeded budget: ${bytes} > ${limitBytes}`);
+		assert.ok(delivered.text.includes(marker), `trial ${trial} lost the active request`);
+		checked += 1;
+	}
+	assert.equal(checked, 36);
+});
