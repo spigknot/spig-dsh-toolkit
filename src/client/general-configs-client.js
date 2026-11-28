@@ -1343,9 +1343,10 @@ function createGeneralConfigsClient(require) {
     };
 
     // Settings gear: single `settings.launcher` slot contribution in its own
-    // Cordis fork. Registered only while the toggle is on; disposing the fork
-    // restores the native launcher. Never mount null: an empty registration
-    // would occupy the single slot.
+    // Cordis fork. Registered only while the toggle is on at priority -100
+    // (lowest priority renders in SlotCore, shadowing the native AccountMenu
+    // at priority 0); disposing the fork restores the native launcher. Never
+    // mount null: an empty registration would occupy the single slot.
     const syncGearFork = (enabled) => {
       if (enabled && !gearFork) {
         try {
@@ -1355,8 +1356,7 @@ function createGeneralConfigsClient(require) {
             apply: (slotCtx) => {
               slotCtx.slots.inject("settings.launcher", () => slotCtx.slots.register({
                 name: "settings.launcher",
-                id: "spig-toolkit-gear",
-                order: -100,
+                priority: -100,
                 inject: () => ({ t }),
               }, GearLauncher));
             },
