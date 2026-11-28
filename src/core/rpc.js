@@ -15,8 +15,26 @@ function readEnvelope(body) {
   return { type: "client-request", rpcId: body.rpcId, method: body.method, payload: body.payload };
 }
 
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function rpcError(code, message, details = {}) {
+  return {
+    ok: false,
+    error: {
+      code: String(code),
+      message: String(message),
+      details: isRecord(details) ? details : {},
+    },
+  };
+}
+
 function serverResponse(rpcId, result) {
-  return Response.json({ type: "server-response", rpcId, result });
+  const normalized = result && result.ok === false && isRecord(result.error)
+    ? rpcError(result.error.code, result.error.message, result.error.details)
+    : result;
+  return Response.json({ type: "server-response", rpcId, result: normalized });
 }
 
 export async function dispatchToolkitRpc(manager, endpoint, payload) {
@@ -26,28 +44,16 @@ export async function dispatchToolkitRpc(manager, endpoint, payload) {
         return { ok: true, value: manager.status() };
       case "setComponent": {
         if (!payload || typeof payload !== "object" || typeof payload.id !== "string" || typeof payload.enabled !== "boolean") {
-          return {
-            ok: false,
-            error: { code: "toolkit/bad-request", message: "setComponent requires { id: string, enabled: boolean }" },
-          };
+          return rpcError("toolkit/bad-request", "setComponent requires { id: string, enabled: boolean }");
         }
         const updated = await manager.setEnabled(payload.id, payload.enabled);
         return { ok: true, value: { component: updated, status: manager.status() } };
       }
       default:
-        return {
-          ok: false,
-          error: { code: "toolkit/not-found", message: `unknown endpoint "${endpoint}"` },
-        };
+        return rpcError("toolkit/not-found", `unknown endpoint "${endpoint}"`);
     }
   } catch (error) {
-    return {
-      ok: false,
-      error: {
-        code: "toolkit/error",
-        message: error instanceof Error ? error.message : String(error),
-      },
-    };
+    return rpcError("toolkit/error", error instanceof Error ? error.message : String(error));
   }
 }
 

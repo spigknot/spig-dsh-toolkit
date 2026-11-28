@@ -220,6 +220,7 @@ test("dispatchToolkitRpc handles status, setComponent, and invalid requests", as
     const badRes = await dispatchToolkitRpc(manager, "setComponent", { id: "subscriptions", enabled: "yes" });
     assert.equal(badRes.ok, false);
     assert.equal(badRes.error.code, "toolkit/bad-request");
+    assert.deepEqual(badRes.error.details, {});
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -339,6 +340,10 @@ test("GeneralConfigsStore persists sidebarBottom sub-toggles atomically and defa
     const ftsNoService = await dispatchGeneralRpc(deps, "ftsSearch", { query: "x" });
     assert.equal(ftsNoService.ok, false);
     assert.equal(ftsNoService.error.code, "general/unavailable");
+    assert.deepEqual(ftsNoService.error.details, {});
+    assert.deepEqual(bad.error.details, {});
+    assert.deepEqual(ftsEmpty.error.details, {});
+    assert.deepEqual(ftsBadLimit.error.details, {});
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -381,4 +386,99 @@ test("quota waits fail fast by default: disclosed resets past 2 min end the turn
 test("generalApiVersion marker exposes the cleaned generation to the supervisor", async () => {
   const { generalConfigsComponent } = await import("../src/components/general-configs.js");
   assert.equal(generalConfigsComponent.hostPlugin.generalApiVersion, 2);
+});
+
+test("settingsGear shadows single settings.launcher at lower priority than default and restores native on toggle off", async () => {
+  const src = readFileSync(new URL("../src/client/general-configs-client.js", import.meta.url), "utf8");
+  const sandbox = { console };
+  vm.runInNewContext(`${src}\n__createGeneralConfigsClient = createGeneralConfigsClient;`, sandbox);
+  const mod = sandbox.__createGeneralConfigsClient((id) => {
+    if (id === "react") {
+      return { createElement: () => null, useState: (v) => [v, () => {}], useEffect: () => {}, useCallback: (fn) => fn };
+    }
+    throw new Error(`unexpected require(${id})`);
+  });
+
+  // Mirror DSH SlotCore single-slot rules: default priority is 0, duplicate
+  // priority throws, and lowest priority renders.
+  const nativeEntry = { name: "settings.launcher", priority: 0, registrant: "WC" };
+  const singleEntries = [nativeEntry];
+  const registerSlot = (opts, component) => {
+    if (opts.name === "settings.launcher") {
+      const pri = opts.priority ?? 0;
+      if (singleEntries.some((e) => (e.priority ?? 0) === pri)) {
+        throw new Error(`single slot "settings.launcher" already has a registration at priority ${pri}`);
+      }
+      const entry = { ...opts, priority: pri, component };
+      singleEntries.push(entry);
+      singleEntries.sort((a, b) => a.priority - b.priority);
+      return () => {
+        const idx = singleEntries.indexOf(entry);
+        if (idx >= 0) singleEntries.splice(idx, 1);
+      };
+    }
+    return () => {};
+  };
+
+  const makeCtx = () => {
+    const cleanups = [];
+    const slots = {
+      inject(_key, cb) {
+        const disposer = cb();
+        if (typeof disposer === "function") cleanups.push(disposer);
+        return () => { if (typeof disposer === "function") disposer(); };
+      },
+      register: registerSlot,
+    };
+    return {
+      slots,
+      locale: { register: () => () => {}, bind: () => (k) => k },
+      effect(fn) {
+        const d = fn();
+        if (typeof d === "function") cleanups.push(d);
+      },
+      inject() {},
+      get() { return undefined; },
+      plugin(def) {
+        const child = makeCtx();
+        def.apply(child);
+        return { dispose: () => child._dispose() };
+      },
+      _dispose() {
+        while (cleanups.length) { try { cleanups.pop()(); } catch {} }
+      },
+    };
+  };
+
+  let current = { sidebarBottom: { sessionSearch: false, settingsGear: false } };
+  const connection = {
+    rpc: {
+      async call(_path, method, payload) {
+        if (method === "spig-general.get") return { ok: true, value: { settings: current } };
+        if (method === "spig-general.update") {
+          current = { sidebarBottom: { ...current.sidebarBottom, ...payload.sidebarBottom } };
+          return { ok: true, value: { settings: current } };
+        }
+        return { ok: true, value: {} };
+      },
+    },
+  };
+
+  const rootCtx = makeCtx();
+  const controller = mod.mountInToolkit(rootCtx, connection);
+  await controller.refresh();
+  assert.equal(singleEntries.length, 1);
+  assert.equal(singleEntries[0], nativeEntry);
+
+  await controller.update({ sidebarBottom: { settingsGear: true } });
+  assert.equal(singleEntries.length, 2);
+  assert.ok(singleEntries[0].priority < 0, "gear launcher must have priority < 0 so lowest-renders shadows native");
+  assert.equal(singleEntries[0].id, undefined);
+  assert.equal(singleEntries[0].order, undefined);
+
+  await controller.update({ sidebarBottom: { settingsGear: false } });
+  assert.equal(singleEntries.length, 1);
+  assert.equal(singleEntries[0], nativeEntry);
+
+  rootCtx._dispose();
 });

@@ -27,8 +27,26 @@ function readEnvelope(body) {
   return { type: "client-request", rpcId: body.rpcId, method: body.method, payload: body.payload };
 }
 
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function rpcError(code, message, details = {}) {
+  return {
+    ok: false,
+    error: {
+      code: String(code),
+      message: String(message),
+      details: isRecord(details) ? details : {},
+    },
+  };
+}
+
 function serverResponse(rpcId, result) {
-  return Response.json({ type: "server-response", rpcId, result });
+  const normalized = result && result.ok === false && isRecord(result.error)
+    ? rpcError(result.error.code, result.error.message, result.error.details)
+    : result;
+  return Response.json({ type: "server-response", rpcId, result: normalized });
 }
 
 export async function dispatchGeneralRpc(deps, endpoint, payload) {
@@ -59,17 +77,11 @@ export async function dispatchGeneralRpc(deps, endpoint, payload) {
         const q = payload && typeof payload === "object" ? payload : {};
         const query = typeof q.query === "string" ? q.query : "";
         if (!query.trim()) {
-          return {
-            ok: false,
-            error: { code: "general/bad-request", message: "ftsSearch requires { query: string }" },
-          };
+          return rpcError("general/bad-request", "ftsSearch requires { query: string }");
         }
         let limit = q.limit === undefined ? FTS_DEFAULT_LIMIT : q.limit;
         if (!Number.isSafeInteger(limit) || limit < 1 || limit > FTS_MAX_LIMIT) {
-          return {
-            ok: false,
-            error: { code: "general/bad-request", message: `ftsSearch limit must be an integer between 1 and ${FTS_MAX_LIMIT}` },
-          };
+          return rpcError("general/bad-request", `ftsSearch limit must be an integer between 1 and ${FTS_MAX_LIMIT}`);
         }
         const cursor = typeof q.cursor === "string" && q.cursor ? q.cursor : undefined;
         let sessionQuery;
@@ -79,10 +91,7 @@ export async function dispatchGeneralRpc(deps, endpoint, payload) {
           sessionQuery = undefined;
         }
         if (!sessionQuery || typeof sessionQuery.searchSessions !== "function") {
-          return {
-            ok: false,
-            error: { code: "general/unavailable", message: "session full-text search is unavailable in this host" },
-          };
+          return rpcError("general/unavailable", "session full-text search is unavailable in this host");
         }
         const page = await sessionQuery.searchSessions({
           query,
@@ -103,19 +112,10 @@ export async function dispatchGeneralRpc(deps, endpoint, payload) {
         };
       }
       default:
-        return {
-          ok: false,
-          error: { code: "general/not-found", message: `unknown endpoint "${endpoint}"` },
-        };
+        return rpcError("general/not-found", `unknown endpoint "${endpoint}"`);
     }
   } catch (error) {
-    return {
-      ok: false,
-      error: {
-        code: "general/error",
-        message: error instanceof Error ? error.message : String(error),
-      },
-    };
+    return rpcError("general/error", error instanceof Error ? error.message : String(error));
   }
 }
 
