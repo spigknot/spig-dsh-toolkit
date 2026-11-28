@@ -3712,6 +3712,14 @@ function SubscriptionsSection(props) {
 	/** Refetch every provider's status; stop a provider's poller once its attempt settles. */
 	const refresh = (0, react.useCallback)(async () => {
 		if (rpc === void 0) return;
+		try {
+			const fast = await callSubscriptionsAuth(rpc, "statusAccounts", {});
+			if (mountedRef.current && fast && typeof fast === "object" && fast.providers) {
+				setStatuses(fast.providers);
+				setSelectedProvider((current) => current ?? sortedSubscriptionProviders(fast.providers)[0].id);
+			}
+		} catch {
+		}
 		let response;
 		try {
 			response = await callSubscriptionsAuth(rpc, "status", {});

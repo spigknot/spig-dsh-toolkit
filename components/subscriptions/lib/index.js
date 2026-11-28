@@ -1524,6 +1524,7 @@ const SUBSCRIPTIONS_AUTH_ENDPOINTS = [
 	"setAgyToolBridge",
 	"setCodexFast",
 	"status",
+	"statusAccounts",
 	"login",
 	"manual",
 	"cancel",
@@ -1564,11 +1565,28 @@ function readEnvelope(body) {
 		payload: record$2.payload
 	};
 }
+function isRecord$2(value) {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function normalizeServerResult(result) {
+	if (result && result.ok === false && isRecord$2(result.error)) {
+		const error = result.error;
+		return {
+			ok: false,
+			error: {
+				code: String(error.code),
+				message: String(error.message),
+				details: isRecord$2(error.details) ? error.details : {}
+			}
+		};
+	}
+	return result;
+}
 function serverResponse(rpcId, result) {
 	return Response.json({
 		type: "server-response",
 		rpcId,
-		result
+		result: normalizeServerResult(result)
 	});
 }
 /**
@@ -1867,6 +1885,23 @@ async function dispatch(controller, speed, proxy, modelDefaults, endpoint, paylo
 					...visibleModels === void 0 ? {} : { visibleModels },
 					...provider === "codex" ? { fastAllowed: providerSettings?.codexFastAllowed?.() === true } : {},
 					...provider === "antigravity" ? { agyTransport: agyTransport(), agyPromptGuard: agyPromptGuard(), agyToolBridge: agyToolBridge() } : {}
+				}];
+			})) });
+		}
+		case "statusAccounts": {
+			// Fast lane for the progressive first paint: account identities and
+			// busy flags only, no CLI spawns and no network. Same degradation
+			// contract as `status` — one provider's failure never blinds the page.
+			const entries = await Promise.all(PROVIDER_IDS.map(async (provider) => [provider, await controller.statusAccounts(provider).catch((error) => ({
+				busy: false,
+				accounts: [],
+				detail: error instanceof Error ? error.message : String(error)
+			}))]));
+			return ok({ providers: Object.fromEntries(entries.map(([provider, status]) => {
+				const displayName = providerSettings?.displayName?.(provider);
+				return [provider, {
+					...status,
+					...displayName ? { displayName } : {}
 				}];
 			})) });
 		}
@@ -12859,15 +12894,22 @@ var SubscriptionsAuthController = class {
 			// The CLI never discloses the signed-in identity outside its own UI, so
 			// the row shows the label the user typed (email, plan, or both).
 			const label = agyAccountLabelValue ?? "Antigravity CLI";
-			const version = await readAgyVersion({ signal: AbortSignal.timeout(2e4) }).catch(() => void 0);
+			// Version and model probes run concurrently: both spawn the CLI and
+			// used to cost ~0.8s + ~2.4s in sequence on every status call.
+			const [version, models] = await Promise.all([
+				readAgyVersion({ signal: AbortSignal.timeout(2e4) }).catch(() => void 0),
+				listAgyModels({ signal: AbortSignal.timeout(2e4) }).then(
+					(models) => ({ ok: true, models }),
+					(error) => ({ ok: false, error })
+				)
+			]);
 			// Surface why the CLI cannot list models; the panel renders this detail.
-			try {
-				const models = await listAgyModels({ signal: AbortSignal.timeout(2e4) });
+			if (models.ok) {
 				return {
 					busy: false,
 					cliManaged: true,
 					cliActive: true,
-					modelCount: models.length,
+					modelCount: models.models.length,
 					agyFix: agyRouteFix(),
 					...version === void 0 ? {} : { cliVersion: version },
 					accounts: [{
@@ -12876,9 +12918,9 @@ var SubscriptionsAuthController = class {
 						account: label
 					}]
 				};
-			} catch (error) {
-				return { busy: false, accounts: [], cliManaged: true, agyFix: agyRouteFix(), ...version === void 0 ? {} : { cliVersion: version }, detail: error instanceof Error ? error.message : String(error) };
 			}
+			const error = models.error;
+			return { busy: false, accounts: [], cliManaged: true, agyFix: agyRouteFix(), ...version === void 0 ? {} : { cliVersion: version }, detail: error instanceof Error ? error.message : String(error) };
 		}
 		const entries = await listAccounts(provider);
 		const detail = this.lastError.get(provider);
@@ -12898,6 +12940,42 @@ var SubscriptionsAuthController = class {
 			}),
 			...detail === void 0 ? {} : { detail },
 			...clientVersion === void 0 ? {} : { clientVersion }
+		};
+	}
+	/**
+	* Account identities and busy flags only — no CLI spawns, no network.
+	* Powers the progressive first paint: the page lists every provider
+	* instantly while the full `status` (versions, model counts) still runs.
+	*/
+	async statusAccounts(provider) {
+		const busy = this.flows.isBusy(provider) || this.deviceFlows.isBusy(provider) || this.finalizing.has(provider);
+		if (provider === "antigravity") {
+			const label = agyAccountLabelValue ?? "Antigravity CLI";
+			return {
+				busy,
+				accounts: [{
+					key: "agy-cli",
+					isDefault: true,
+					account: label
+				}]
+			};
+		}
+		const entries = await listAccounts(provider);
+		const detail = this.lastError.get(provider);
+		return {
+			busy,
+			accounts: entries.map(({ key, session }, index) => {
+				const account = accountOf(provider, session);
+				const plan = planOf(provider, session);
+				return {
+					key,
+					isDefault: index === 0,
+					expiresAt: session.expiresAt,
+					...account === void 0 ? {} : { account },
+					...plan === void 0 ? {} : { plan }
+				};
+			}),
+			...detail === void 0 ? {} : { detail }
 		};
 	}
 	async login(provider, method) {

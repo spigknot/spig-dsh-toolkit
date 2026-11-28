@@ -20,7 +20,7 @@ export const SUBSCRIPTIONS_AUTH_PREFIX = 'subscriptions-auth.';
  */
 export const SUBSCRIPTIONS_AUTH_ENDPOINTS = [
     'providerSettings', 'setProviderSettings',
-    'status', 'login', 'manual', 'cancel', 'logout', 'setDefault', 'usage',
+    'status', 'statusAccounts', 'login', 'manual', 'cancel', 'logout', 'setDefault', 'usage',
     'image', 'video', 'prepareReset', 'consumeReset',
     'speed', 'setSpeed',
     'proxyGet', 'proxySet', 'proxyTest',
@@ -41,8 +41,34 @@ function readEnvelope(body) {
         return undefined;
     return { type: 'client-request', rpcId: record.rpcId, method: record.method, payload: record.payload };
 }
+function isRecord(value) {
+    return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+/**
+ * Normalize any dispatch outcome into a DSH `server-response` result.
+ *
+ * The host validates failure envelopes strictly (`error.code`/`message` as
+ * strings, `error.details` as a record) and rejects the whole RPC with
+ * `connection: invalid server-response failure` otherwise — masking the real
+ * error. Every failure therefore leaves here with a record `details`, even
+ * when a future dispatch path forgets to include one.
+ */
+export function normalizeServerResult(result) {
+    if (result && result.ok === false && isRecord(result.error)) {
+        const error = result.error;
+        return {
+            ok: false,
+            error: {
+                code: String(error.code),
+                message: String(error.message),
+                details: isRecord(error.details) ? error.details : {},
+            },
+        };
+    }
+    return result;
+}
 function serverResponse(rpcId, result) {
-    return Response.json({ type: 'server-response', rpcId, result });
+    return Response.json({ type: 'server-response', rpcId, result: normalizeServerResult(result) });
 }
 /**
  * Wrap one endpoint's RPC handler as an exact Fetch route: decode the
@@ -328,6 +354,22 @@ async function dispatch(controller, speed, proxy, modelDefaults, endpoint, paylo
                     const visibleModels = providerSettings?.visibleModels?.(provider);
                     return [provider, { ...status, ...(displayName ? { displayName } : {}),
                             ...(visibleModels === undefined ? {} : { visibleModels }) }];
+                })) });
+        }
+        case 'statusAccounts': {
+            // Fast lane for the progressive first paint: account identities and
+            // busy flags only, no CLI spawns and no network. Same degradation
+            // contract as `status` — one provider's failure never blinds the page.
+            if (typeof controller.statusAccounts !== 'function')
+                throw new BadRequest('statusAccounts is unavailable');
+            const entries = await Promise.all(PROVIDER_IDS.map(async (provider) => [provider, await controller.statusAccounts(provider).catch((error) => ({
+                    busy: false,
+                    accounts: [],
+                    detail: error instanceof Error ? error.message : String(error),
+                }))]));
+            return ok({ providers: Object.fromEntries(entries.map(([provider, status]) => {
+                    const displayName = providerSettings?.displayName?.(provider);
+                    return [provider, { ...status, ...(displayName ? { displayName } : {}) }];
                 })) });
         }
         case 'login': {

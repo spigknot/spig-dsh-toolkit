@@ -409,6 +409,18 @@ export function SubscriptionsSection(props) {
     const refresh = useCallback(async () => {
         if (rpc === undefined)
             return;
+        // Progressive first paint: account identities land instantly (no CLI
+        // spawns), then the full status fills in versions and model counts.
+        try {
+            const fast = await callSubscriptionsAuth(rpc, 'statusAccounts', {});
+            if (mountedRef.current && fast && typeof fast === 'object' && fast.providers) {
+                setStatuses(fast.providers);
+                setSelectedProvider(current => current ?? sortedSubscriptionProviders(fast.providers)[0].id);
+            }
+        }
+        catch {
+            // An older host without the fast lane still answers full status below.
+        }
         let response;
         try {
             response = await callSubscriptionsAuth(rpc, 'status', {});
